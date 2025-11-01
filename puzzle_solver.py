@@ -26,14 +26,40 @@ class PuzzleSolver:
         self.debug = debug
     
     def is_solved(self, state: List[List[str]]) -> bool:
-        """Check if puzzle is solved (all tubes have same color or are empty)"""
-        for tube in state:
-            if not tube:  # Empty tube
+        """
+        Check if puzzle is solved (all same-color pieces are in one tube)
+        Rules:
+        1. Each tube is either empty OR full (4 units) with all same color
+        2. All pieces of the same color must be in the same tube
+        """
+        # Collect all colors and their positions
+        color_positions = {}  # color -> list of (tube_idx, count)
+        
+        for tube_idx, tube in enumerate(state):
+            if not tube:  # Empty tube - OK
                 continue
-            # Check if all colors in tube are the same
+            
+            # Check if all colors in this tube are the same
             first_color = tube[0]
             if not all(color == first_color for color in tube):
+                return False  # Mixed colors in a tube - not solved
+            
+            # Tube must be full (4 units) if it has any liquid
+            if len(tube) != self.max_capacity:
+                return False  # Not full - not solved
+            
+            # Track which tube this color is in
+            if first_color not in color_positions:
+                color_positions[first_color] = []
+            color_positions[first_color].append((tube_idx, len(tube)))
+        
+        # Check that each color appears in exactly one tube (or is completely solved)
+        for color, positions in color_positions.items():
+            if len(positions) > 1:
+                # Same color in multiple tubes - not solved
                 return False
+        
+        # All checks passed - puzzle is solved
         return True
     
     def get_top_color(self, tube: List[str]) -> Optional[str]:
@@ -201,13 +227,23 @@ class PuzzleSolver:
             if g > g_score.get(state_key, float('inf')):
                 continue
             
-            # Check if solved
+            # Check if solved (must have all same-color pieces in one full tube)
             if self.is_solved(current_state):
                 if self.debug:
                     print(f"\n{'='*60}")
                     print(f"SOLUTION FOUND in {iterations} iterations!")
                     print(f"{'='*60}")
                     self._print_state(current_state, "Final State (Solved)")
+                    
+                    # Verify solution is correct
+                    print("\nSolution verification:")
+                    for tube_idx, tube in enumerate(current_state):
+                        if tube:
+                            if len(tube) == self.max_capacity and all(c == tube[0] for c in tube):
+                                print(f"  ✓ Tube {tube_idx}: Full and uniform (all '{tube[0]}')")
+                            else:
+                                print(f"  ✗ Tube {tube_idx}: Issue - {tube}")
+                    
                     print(f"\nTotal moves: {len(moves)}")
                 return moves
             

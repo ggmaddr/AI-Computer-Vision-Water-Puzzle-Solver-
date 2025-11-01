@@ -278,24 +278,71 @@ class WaterSortSolverApp:
             # Step 4: Execute
             self.execute_solution(solution)
             
-            # Check if solved
-            time.sleep(2)  # Wait for game to update
+            # Wait for game to update after moves
+            time.sleep(2)
             
-            if self.check_if_solved():
-                print("\n🎉 Puzzle solved!")
+            # Re-analyze to check current state
+            print("\nChecking if puzzle is solved...")
+            current_puzzle_state = self.analyze_puzzle()
+            
+            # Check if truly solved
+            solver_check = PuzzleSolver(
+                current_puzzle_state['totalTube'],
+                current_puzzle_state['emptyTubeNumbers'],
+                current_puzzle_state['filledTubelist'],
+                debug=False
+            )
+            
+            if solver_check.is_solved(current_puzzle_state['filledTubelist']):
+                print("\n🎉 Puzzle fully solved!")
                 
-                # Ask if user wants to continue
-                response = input("\nContinue to next round? (y/n): ").lower()
-                if response != 'y':
-                    break
+                # Try to detect and click the "Next" button
+                print("\nLooking for 'Next' button...")
+                next_button_pos = self.image_processor.detect_next_button()
                 
-                round_number += 1
-                print("\nWaiting for next puzzle to appear...")
-                input("Press Enter when the next puzzle is ready...")
+                if next_button_pos:
+                    print(f"✓ Found Next button at {next_button_pos}")
+                    print("Clicking Next button...")
+                    import pyautogui
+                    pyautogui.click(next_button_pos[0], next_button_pos[1])
+                    time.sleep(2)  # Wait for next level to load
+                    print("✓ Clicked Next button")
+                    
+                    # Wait a bit for the next puzzle to appear
+                    time.sleep(2)
+                    round_number += 1
+                else:
+                    print("⚠️  Could not find Next button automatically")
+                    response = input("\nContinue to next round? (y/n): ").lower()
+                    if response != 'y':
+                        break
+                    
+                    round_number += 1
+                    print("\nWaiting for next puzzle to appear...")
+                    input("Press Enter when the next puzzle is ready...")
             else:
-                print("\n⚠️  Puzzle not yet solved. Attempting to continue...")
-                # Re-analyze and try again
-                time.sleep(1)
+                print("\n⚠️  Puzzle not fully solved yet. Analyzing remaining moves...")
+                
+                # Print current state
+                print("\nCurrent State:")
+                for idx, tube in enumerate(current_puzzle_state['filledTubelist']):
+                    if tube:
+                        print(f"  Tube {idx}: {tube}")
+                    else:
+                        print(f"  Tube {idx}: [empty]")
+                
+                # Try to solve the remaining puzzle
+                remaining_solution = solver_check.solve_with_limits(max_moves=500, max_depth=100)
+                
+                if remaining_solution:
+                    print(f"\nFound {len(remaining_solution)} more moves to complete the puzzle.")
+                    self.execute_solution(remaining_solution)
+                    time.sleep(2)
+                else:
+                    print("\n⚠️  Could not find solution for remaining puzzle.")
+                    response = input("\nContinue anyway? (y/n): ").lower()
+                    if response != 'y':
+                        break
         
         print("\n" + "=" * 60)
         print("Application finished. Thank you!")
