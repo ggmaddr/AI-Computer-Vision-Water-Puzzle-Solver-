@@ -133,11 +133,58 @@ class WaterSortSolverApp:
         solver = PuzzleSolver(
             puzzle_state['totalTube'],
             puzzle_state['emptyTubeNumbers'],
-            puzzle_state['filledTubelist']
+            puzzle_state['filledTubelist'],
+            debug=True  # Enable detailed logging
         )
         
         print("Searching for solution...")
         solution = solver.solve_with_limits(max_moves=500, max_depth=100)
+        
+        if solution:
+            # Print solution with color details
+            print("\n" + "=" * 60)
+            print("SOLUTION MOVES (with colors):")
+            print("=" * 60)
+            
+            # Reconstruct state to show colors for each move
+            current_state = [list(tube) for tube in puzzle_state['filledTubelist']]
+            
+            # Print initial state
+            print("\nInitial State:")
+            for idx, tube in enumerate(current_state):
+                if tube:
+                    print(f"  Tube {idx}: {tube}")
+                else:
+                    print(f"  Tube {idx}: [empty]")
+            
+            for i, (from_tube, to_tube) in enumerate(solution, 1):
+                # Get color being poured
+                if current_state[from_tube]:
+                    top_color = current_state[from_tube][-1]
+                    block_size = solver.count_top_colors(current_state[from_tube])
+                    print(f"\n{'='*60}")
+                    print(f"Move {i}/{len(solution)}: Pour {block_size} unit(s) of '{top_color}' from Tube {from_tube} → Tube {to_tube}")
+                    print(f"{'='*60}")
+                    
+                    # Apply move
+                    current_state = solver.pour(current_state, from_tube, to_tube, block_size)
+                    
+                    # Print state of ALL tubes after this move
+                    print(f"\nState after move {i}:")
+                    for idx, tube in enumerate(current_state):
+                        if tube:
+                            print(f"  Tube {idx}: {tube}")
+                        else:
+                            print(f"  Tube {idx}: [empty]")
+                else:
+                    print(f"\nMove {i}: ERROR - Tube {from_tube} is empty!")
+                    # Still print state even if error
+                    print(f"\nState after move {i}:")
+                    for idx, tube in enumerate(current_state):
+                        if tube:
+                            print(f"  Tube {idx}: {tube}")
+                        else:
+                            print(f"  Tube {idx}: [empty]")
         
         if not solution:
             print("ERROR: Could not find solution!")
@@ -153,7 +200,6 @@ class WaterSortSolverApp:
     def execute_solution(self, moves: List[Tuple[int, int]]):
         """
         Execute the solution using mouse automation
-        Returns: Number of moves executed (or None if stopped)
         """
         print("\n" + "=" * 60)
         print("Step 4: Executing Solution")
@@ -168,19 +214,12 @@ class WaterSortSolverApp:
                 self.tube_positions
             )
         
-        print("Starting in 3 seconds...")
-        print("⚠️  Move mouse to corner to abort (failsafe)")
-        print("⚠️  Or press 's' + Enter during execution to stop\n")
+        print("Starting in 3 seconds... Move mouse to corner to abort (failsafe)...")
         time.sleep(3)
         
-        executed = self.mouse_controller.execute_moves(moves, delay_between_moves=0.8)
+        self.mouse_controller.execute_moves(moves, delay_between_moves=0.8)
         
-        if executed == len(moves):
-            print("\n✓ Solution execution complete!")
-            return executed
-        else:
-            print(f"\n⚠️  Execution stopped. {executed}/{len(moves)} moves completed.")
-            return executed
+        print("\nSolution execution complete!")
     
     def check_if_solved(self) -> bool:
         """Check if puzzle is solved by analyzing current state"""
@@ -237,34 +276,7 @@ class WaterSortSolverApp:
                 break
             
             # Step 4: Execute
-            executed_moves = self.execute_solution(solution)
-            
-            # If execution was stopped, ask user what to do
-            if executed_moves is None or executed_moves < len(solution):
-                print("\n" + "=" * 60)
-                print("Execution was stopped.")
-                print("=" * 60)
-                response = input("\nWhat would you like to do?\n  (c) Continue with remaining moves\n  (r) Restart from beginning\n  (s) Skip to next round\n  (q) Quit\n\nEnter choice: ").strip().lower()
-                
-                if response == 'c':
-                    # Continue with remaining moves
-                    remaining = solution[executed_moves:]
-                    if remaining:
-                        print(f"\nContinuing with {len(remaining)} remaining moves...")
-                        self.execute_solution(remaining)
-                elif response == 'r':
-                    # Restart this round
-                    continue  # Go back to analyze puzzle
-                elif response == 's':
-                    # Skip to next round
-                    round_number += 1
-                    print("\nWaiting for next puzzle to appear...")
-                    input("Press Enter when the next puzzle is ready...")
-                    continue
-                elif response == 'q':
-                    break
-                else:
-                    print("Invalid choice. Continuing to check if solved...")
+            self.execute_solution(solution)
             
             # Check if solved
             time.sleep(2)  # Wait for game to update

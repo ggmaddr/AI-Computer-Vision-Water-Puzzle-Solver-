@@ -10,18 +10,20 @@ import heapq
 class PuzzleSolver:
     """Solves water sort puzzles using A* algorithm"""
     
-    def __init__(self, total_tubes: int, empty_tube_numbers: int, filled_tubelist: List[List[str]]):
+    def __init__(self, total_tubes: int, empty_tube_numbers: int, filled_tubelist: List[List[str]], debug: bool = True):
         """
         Initialize solver
         Args:
             total_tubes: Total number of tubes
             empty_tube_numbers: Number of empty tubes
             filled_tubelist: List of tube contents (each tube is list of colors from bottom to top)
+            debug: Enable debug logging
         """
         self.total_tubes = total_tubes
         self.empty_tube_numbers = empty_tube_numbers
         self.initial_state = [list(tube) for tube in filled_tubelist]  # Deep copy
         self.max_capacity = 4  # Typical capacity per tube
+        self.debug = debug
     
     def is_solved(self, state: List[List[str]]) -> bool:
         """Check if puzzle is solved (all tubes have same color or are empty)"""
@@ -125,13 +127,50 @@ class PuzzleSolver:
         
         return h
     
+    def _print_state(self, state: List[List[str]], title: str = "State"):
+        """Print the current state of tubes"""
+        if not self.debug:
+            return
+        
+        print(f"\n{title}:")
+        for i, tube in enumerate(state):
+            if tube:
+                print(f"  Tube {i}: {tube} (bottom→top)")
+            else:
+                print(f"  Tube {i}: [empty]")
+    
+    def _print_move(self, from_idx: int, to_idx: int, from_tube: List[str], to_tube: List[str], 
+                    block_size: int, move_num: int = None):
+        """Print move details"""
+        if not self.debug:
+            return
+        
+        top_color = from_tube[-1] if from_tube else "N/A"
+        prefix = f"[Move {move_num}] " if move_num is not None else ""
+        print(f"{prefix}Pouring {block_size} unit(s) of '{top_color}' from Tube {from_idx} to Tube {to_idx}")
+        
+        from_display = from_tube if from_tube else ["[empty]"]
+        to_display = to_tube if to_tube else ["[empty]"]
+        print(f"    Tube {from_idx}: {from_display} → Tube {to_idx}: {to_display}")
+    
     def solve(self) -> Optional[List[Tuple[int, int]]]:
         """
         Solve the puzzle using A* algorithm
         Returns: List of (from_tube, to_tube) moves, or None if unsolvable
         """
+        if self.debug:
+            print("\n" + "=" * 60)
+            print("SOLVING PUZZLE")
+            print("=" * 60)
+            self._print_state(self.initial_state, "Initial State")
+            print()
+        
         initial_key = self.state_to_key(self.initial_state)
         initial_h = self.heuristic(self.initial_state)
+        
+        if self.debug:
+            print(f"Heuristic (initial): {initial_h}")
+            print(f"Starting A* search...\n")
         
         # Priority queue: (f_score, counter, g_score, state, moves)
         # Use counter to break ties and ensure FIFO for same f_score
@@ -145,9 +184,15 @@ class PuzzleSolver:
         
         max_iterations = 1000000
         iterations = 0
+        last_log_iteration = 0
         
         while pq and iterations < max_iterations:
             iterations += 1
+            
+            # Progress logging every 10000 iterations
+            if self.debug and iterations - last_log_iteration >= 10000:
+                print(f"Progress: {iterations} iterations, {len(pq)} states in queue, {len(g_score)} states explored")
+                last_log_iteration = iterations
             
             f, _, g, current_state, moves = heapq.heappop(pq)
             state_key = self.state_to_key(current_state)
@@ -158,6 +203,12 @@ class PuzzleSolver:
             
             # Check if solved
             if self.is_solved(current_state):
+                if self.debug:
+                    print(f"\n{'='*60}")
+                    print(f"SOLUTION FOUND in {iterations} iterations!")
+                    print(f"{'='*60}")
+                    self._print_state(current_state, "Final State (Solved)")
+                    print(f"\nTotal moves: {len(moves)}")
                 return moves
             
             # Try all possible moves
@@ -193,6 +244,9 @@ class PuzzleSolver:
                         new_moves = moves + [(from_idx, to_idx)]
                         heapq.heappush(pq, (new_f, counter, tentative_g, new_state, new_moves))
                         counter += 1
+        
+        if self.debug:
+            print(f"\nNo solution found after {iterations} iterations")
         
         return None  # No solution found
     
