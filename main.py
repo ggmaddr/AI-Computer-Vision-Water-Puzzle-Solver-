@@ -153,6 +153,7 @@ class WaterSortSolverApp:
     def execute_solution(self, moves: List[Tuple[int, int]]):
         """
         Execute the solution using mouse automation
+        Returns: Number of moves executed (or None if stopped)
         """
         print("\n" + "=" * 60)
         print("Step 4: Executing Solution")
@@ -167,12 +168,19 @@ class WaterSortSolverApp:
                 self.tube_positions
             )
         
-        print("Starting in 3 seconds... Move mouse to corner to abort (failsafe)...")
+        print("Starting in 3 seconds...")
+        print("⚠️  Move mouse to corner to abort (failsafe)")
+        print("⚠️  Or press 's' + Enter during execution to stop\n")
         time.sleep(3)
         
-        self.mouse_controller.execute_moves(moves, delay_between_moves=0.8)
+        executed = self.mouse_controller.execute_moves(moves, delay_between_moves=0.8)
         
-        print("\nSolution execution complete!")
+        if executed == len(moves):
+            print("\n✓ Solution execution complete!")
+            return executed
+        else:
+            print(f"\n⚠️  Execution stopped. {executed}/{len(moves)} moves completed.")
+            return executed
     
     def check_if_solved(self) -> bool:
         """Check if puzzle is solved by analyzing current state"""
@@ -229,7 +237,34 @@ class WaterSortSolverApp:
                 break
             
             # Step 4: Execute
-            self.execute_solution(solution)
+            executed_moves = self.execute_solution(solution)
+            
+            # If execution was stopped, ask user what to do
+            if executed_moves is None or executed_moves < len(solution):
+                print("\n" + "=" * 60)
+                print("Execution was stopped.")
+                print("=" * 60)
+                response = input("\nWhat would you like to do?\n  (c) Continue with remaining moves\n  (r) Restart from beginning\n  (s) Skip to next round\n  (q) Quit\n\nEnter choice: ").strip().lower()
+                
+                if response == 'c':
+                    # Continue with remaining moves
+                    remaining = solution[executed_moves:]
+                    if remaining:
+                        print(f"\nContinuing with {len(remaining)} remaining moves...")
+                        self.execute_solution(remaining)
+                elif response == 'r':
+                    # Restart this round
+                    continue  # Go back to analyze puzzle
+                elif response == 's':
+                    # Skip to next round
+                    round_number += 1
+                    print("\nWaiting for next puzzle to appear...")
+                    input("Press Enter when the next puzzle is ready...")
+                    continue
+                elif response == 'q':
+                    break
+                else:
+                    print("Invalid choice. Continuing to check if solved...")
             
             # Check if solved
             time.sleep(2)  # Wait for game to update

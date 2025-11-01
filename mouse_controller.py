@@ -7,6 +7,7 @@ import time
 from typing import List, Tuple
 import numpy as np
 import sys
+import threading
 
 
 class MouseController:
@@ -24,6 +25,8 @@ class MouseController:
         pyautogui.PAUSE = 0.1  # Small pause between actions
         pyautogui.FAILSAFE = True  # Move mouse to corner to abort
         self.debug = True  # Enable debug mode for visual feedback
+        self.stop_execution = False  # Flag to stop execution
+        self.input_thread = None  # Thread for listening to 's' key
     
     def get_tube_center(self, tube_index: int) -> Tuple[int, int]:
         """Get center coordinates of a tube in screen coordinates"""
@@ -75,18 +78,9 @@ class MouseController:
             # Move to position first so user can see where we're going
             current_pos = pyautogui.position()
             print(f"\033[93m📍 Moving mouse to Tube {tube_index}: ({x}, {y})\033[0m", end="", flush=True)
-            pyautogui.moveTo(x, y, duration=0.5)  # Slower, more visible movement
-            self._draw_click_indicator(x, y, "yellow")  # Draw attention
-            time.sleep(0.3)  # Pause so user can see position
-            print(f" \033[92m✓ Positioned\033[0m")
-            
-            # Show click with visual feedback - flash red before clicking
-            print(f"\033[91m🖱️  CLICKING at ({x}, {y})...\033[0m", end="", flush=True)
-            # Flash indicator in red before click
-            self._draw_click_indicator(x, y, "red")
+            pyautogui.moveTo(x, y, duration=0.3)  # Slower, more visible movement
             time.sleep(0.1)
-        
-        pyautogui.click(x, y)
+            pyautogui.click(x, y)
         
         if self.debug:
             print(f" \033[92m✓ Clicked!\033[0m")
@@ -111,6 +105,18 @@ class MouseController:
         self.click_tube(to_tube, delay=0.1)
         time.sleep(delay)
     
+    def _listen_for_stop(self):
+        """Listen for 's' key to stop execution"""
+        try:
+            while not self.stop_execution:
+                user_input = input().strip().lower()
+                if user_input == 's':
+                    self.stop_execution = True
+                    print("\n\033[91m⚠️  STOP signal received! Stopping execution...\033[0m")
+                    break
+        except:
+            pass
+    
     def execute_moves(self, moves: List[Tuple[int, int]], delay_between_moves: float = 0.5):
         """
         Execute a sequence of moves with visual feedback
@@ -118,19 +124,39 @@ class MouseController:
             moves: List of (from_tube, to_tube) tuples
             delay_between_moves: Delay between each move
         """
+        self.stop_execution = False  # Reset stop flag
+        
         print(f"\n\033[95m{'='*60}\033[0m")
         print(f"\033[95m🎯 Executing {len(moves)} moves...\033[0m")
-        print(f"\033[95m{'='*60}\033[0m\n")
+        print(f"\033[95m{'='*60}\033[0m")
+        print(f"\033[93m💡 Press 's' + Enter to stop execution\033[0m\n")
         
+        # Start thread to listen for 's' key
+        self.input_thread = threading.Thread(target=self._listen_for_stop, daemon=True)
+        self.input_thread.start()
+        
+        executed_moves = 0
         for i, (from_tube, to_tube) in enumerate(moves, 1):
+            if self.stop_execution:
+                print(f"\n\033[91m{'='*60}\033[0m")
+                print(f"\033[91m⚠️  Execution stopped by user\033[0m")
+                print(f"\033[91m   Completed {executed_moves} of {len(moves)} moves\033[0m")
+                print(f"\033[91m{'='*60}\033[0m")
+                return executed_moves
+            
             print(f"\033[94m━━━ Move {i}/{len(moves)} ━━━\033[0m")
             self.pour_tube(from_tube, to_tube, delay=delay_between_moves)
-            if i < len(moves):
+            executed_moves += 1
+            
+            if i < len(moves) and not self.stop_execution:
                 print()  # Blank line between moves
         
-        print(f"\n\033[92m{'='*60}\033[0m")
-        print(f"\033[92m✓ All {len(moves)} moves executed successfully!\033[0m")
-        print(f"\033[92m{'='*60}\033[0m")
+        if not self.stop_execution:
+            print(f"\n\033[92m{'='*60}\033[0m")
+            print(f"\033[92m✓ All {len(moves)} moves executed successfully!\033[0m")
+            print(f"\033[92m{'='*60}\033[0m")
+        
+        return executed_moves
     
     def wait_for_user_input(self, message: str = "") -> Tuple[int, int]:
         """
