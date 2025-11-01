@@ -1,14 +1,14 @@
 """
 Water Sort Puzzle Solver
-Uses BFS algorithm to find solution path
+Uses A* algorithm with heuristic to find optimal solution path
+Based on the sample water solver implementation
 """
-from typing import List, Tuple, Optional, Set
-from collections import deque
-import copy
+from typing import List, Tuple, Optional
+import heapq
 
 
 class PuzzleSolver:
-    """Solves water sort puzzles using BFS"""
+    """Solves water sort puzzles using A* algorithm"""
     
     def __init__(self, total_tubes: int, empty_tube_numbers: int, filled_tubelist: List[List[str]]):
         """
@@ -34,70 +34,127 @@ class PuzzleSolver:
                 return False
         return True
     
-    def can_pour(self, from_tube: List[str], to_tube: List[str], max_capacity: int) -> bool:
-        """
-        Check if we can pour from one tube to another
-        Returns: (can_pour, amount) tuple
-        """
-        if not from_tube:
-            return False, 0
-        
-        # Can't pour if target is full
-        if len(to_tube) >= max_capacity:
-            return False, 0
-        
-        # Get top color(s) from source tube
-        top_color = from_tube[-1]
-        
-        # Count consecutive same colors from top
-        pour_amount = 0
-        for i in range(len(from_tube) - 1, -1, -1):
-            if from_tube[i] == top_color:
-                pour_amount += 1
+    def get_top_color(self, tube: List[str]) -> Optional[str]:
+        """Get the top color of a tube"""
+        if not tube:
+            return None
+        return tube[-1]
+    
+    def count_top_colors(self, tube: List[str]) -> int:
+        """Count consecutive same colors from top"""
+        if not tube:
+            return 0
+        top_color = tube[-1]
+        count = 0
+        for i in range(len(tube) - 1, -1, -1):
+            if tube[i] == top_color:
+                count += 1
             else:
                 break
-        
-        # Can only pour if target is empty or has same color on top
-        if to_tube:
-            if to_tube[-1] != top_color:
-                return False, 0
-        
-        # Can't pour more than available space
-        available_space = max_capacity - len(to_tube)
-        pour_amount = min(pour_amount, available_space)
-        
-        return pour_amount > 0, pour_amount
+        return count
     
-    def pour(self, state: List[List[str]], from_idx: int, to_idx: int, amount: int) -> List[List[str]]:
-        """Pour liquid from one tube to another"""
+    def can_pour(self, from_tube: List[str], to_tube: List[str], block_size: int) -> bool:
+        """
+        Check if we can pour a block of colors from one tube to another
+        Args:
+            from_tube: Source tube
+            to_tube: Destination tube
+            block_size: Size of the block to pour
+        Returns: True if can pour
+        """
+        if not from_tube:
+            return False
+        
+        space = self.max_capacity - len(to_tube)
+        if space < block_size:
+            return False
+        
+        if not to_tube:
+            return True
+        
+        return self.get_top_color(from_tube) == self.get_top_color(to_tube)
+    
+    def pour(self, state: List[List[str]], from_idx: int, to_idx: int, block_size: int) -> List[List[str]]:
+        """Pour a block of liquid from one tube to another"""
         new_state = [list(tube) for tube in state]  # Deep copy
         
-        # Get top color
-        top_color = new_state[from_idx][-1]
-        
-        # Remove from source
-        new_state[from_idx] = new_state[from_idx][:-amount]
-        
-        # Add to target
-        new_state[to_idx].extend([top_color] * amount)
+        # Pour block_size units from source to target
+        for _ in range(block_size):
+            new_state[to_idx].append(new_state[from_idx].pop())
         
         return new_state
     
-    def state_to_tuple(self, state: List[List[str]]) -> Tuple:
-        """Convert state to hashable tuple"""
-        return tuple(tuple(tube) for tube in state)
+    def state_to_key(self, state: List[List[str]]) -> str:
+        """Convert state to hashable string key"""
+        return '|'.join(','.join(tube) for tube in state)
+    
+    def is_useful_move(self, from_tube: List[str], to_tube: List[str], block_size: int) -> bool:
+        """
+        Check if a move is useful (prunes obviously bad moves)
+        """
+        if not to_tube:  # Pouring to empty tube
+            top_color = self.get_top_color(from_tube)
+            # Don't pour to empty if the source tube is already all one color
+            if from_tube and all(c == top_color for c in from_tube):
+                return False
+        return True
+    
+    def heuristic(self, state: List[List[str]]) -> int:
+        """
+        Heuristic function for A* algorithm
+        Counts color transitions and bottom color conflicts
+        """
+        h = 0
+        # Count color transitions within tubes
+        for tube in state:
+            for i in range(1, len(tube)):
+                if tube[i] != tube[i - 1]:
+                    h += 1
+        
+        # Count bottom color conflicts (same color at bottom of multiple tubes)
+        bottoms = {}
+        for tube in state:
+            if tube:
+                bottom = tube[0]
+                bottoms[bottom] = bottoms.get(bottom, 0) + 1
+        
+        # Add penalty for each duplicate bottom color (except first one)
+        for count in bottoms.values():
+            if count > 1:
+                h += count - 1
+        
+        return h
     
     def solve(self) -> Optional[List[Tuple[int, int]]]:
         """
-        Solve the puzzle using BFS
+        Solve the puzzle using A* algorithm
         Returns: List of (from_tube, to_tube) moves, or None if unsolvable
         """
-        # BFS queue: (state, moves_path)
-        queue = deque([(self.initial_state, [])])
-        visited = {self.state_to_tuple(self.initial_state)}
+        initial_key = self.state_to_key(self.initial_state)
+        initial_h = self.heuristic(self.initial_state)
         
-        while queue:
-            current_state, moves = queue.popleft()
+        # Priority queue: (f_score, counter, g_score, state, moves)
+        # Use counter to break ties and ensure FIFO for same f_score
+        counter = 0
+        pq = [(initial_h, counter, 0, self.initial_state, [])]
+        heapq.heapify(pq)
+        counter += 1
+        
+        # Track best g_score for each state
+        g_score = {initial_key: 0}
+        
+        max_iterations = 1000000
+        iterations = 0
+        
+        while pq and iterations < max_iterations:
+            iterations += 1
+            
+            f, _, g, current_state, moves = heapq.heappop(pq)
+            state_key = self.state_to_key(current_state)
+            
+            # Skip if we've found a better path to this state
+            if g > g_score.get(state_key, float('inf')):
+                continue
             
             # Check if solved
             if self.is_solved(current_state):
@@ -105,87 +162,47 @@ class PuzzleSolver:
             
             # Try all possible moves
             for from_idx in range(self.total_tubes):
-                if not current_state[from_idx]:  # Source is empty
+                if not current_state[from_idx]:
                     continue
                 
-                for to_idx in range(self.total_tubes):
-                    if from_idx == to_idx:  # Can't pour to self
-                        continue
-                    
-                    can_pour, amount = self.can_pour(
-                        current_state[from_idx],
-                        current_state[to_idx],
-                        self.max_capacity
-                    )
-                    
-                    if can_pour:
-                        new_state = self.pour(current_state, from_idx, to_idx, amount)
-                        state_tuple = self.state_to_tuple(new_state)
-                        
-                        if state_tuple not in visited:
-                            visited.add(state_tuple)
-                            new_moves = moves + [(from_idx, to_idx)]
-                            
-                            # Prune obviously bad moves
-                            if not self._is_bad_state(new_state):
-                                queue.append((new_state, new_moves))
-        
-        return None  # No solution found
-    
-    def _is_bad_state(self, state: List[List[str]]) -> bool:
-        """Heuristic to detect obviously bad states"""
-        # Check if there are too many different colors in one tube
-        for tube in state:
-            if len(tube) > 0:
-                unique_colors = set(tube)
-                # If tube has multiple colors but they're not organized, it's bad
-                if len(unique_colors) > 1:
-                    # Check if colors are mixed (not all same color at top)
-                    if len(set(tube[-1:])) > 1:  # Top segment has multiple colors
-                        return False  # This is actually fine during solving
-        return False
-    
-    def solve_with_limits(self, max_moves: int = 100, max_depth: int = 50) -> Optional[List[Tuple[int, int]]]:
-        """
-        Solve with limits to prevent infinite loops
-        Args:
-            max_moves: Maximum number of moves to consider
-            max_depth: Maximum depth in search tree
-        """
-        queue = deque([(self.initial_state, [])])
-        visited = {self.state_to_tuple(self.initial_state)}
-        
-        while queue and len(visited) < max_moves:
-            current_state, moves = queue.popleft()
-            
-            if len(moves) > max_depth:
-                continue
-            
-            if self.is_solved(current_state):
-                return moves
-            
-            for from_idx in range(self.total_tubes):
-                if not current_state[from_idx]:
+                block_size = self.count_top_colors(current_state[from_idx])
+                if block_size == 0:
                     continue
                 
                 for to_idx in range(self.total_tubes):
                     if from_idx == to_idx:
                         continue
                     
-                    can_pour, amount = self.can_pour(
-                        current_state[from_idx],
-                        current_state[to_idx],
-                        self.max_capacity
-                    )
+                    if not self.can_pour(current_state[from_idx], current_state[to_idx], block_size):
+                        continue
                     
-                    if can_pour:
-                        new_state = self.pour(current_state, from_idx, to_idx, amount)
-                        state_tuple = self.state_to_tuple(new_state)
-                        
-                        if state_tuple not in visited:
-                            visited.add(state_tuple)
-                            new_moves = moves + [(from_idx, to_idx)]
-                            queue.append((new_state, new_moves))
+                    if not self.is_useful_move(current_state[from_idx], current_state[to_idx], block_size):
+                        continue
+                    
+                    # Make the move
+                    new_state = self.pour(current_state, from_idx, to_idx, block_size)
+                    new_key = self.state_to_key(new_state)
+                    tentative_g = g + 1
+                    
+                    # Check if this is a better path
+                    current_g = g_score.get(new_key, float('inf'))
+                    if tentative_g < current_g:
+                        g_score[new_key] = tentative_g
+                        new_h = self.heuristic(new_state)
+                        new_f = tentative_g + new_h
+                        new_moves = moves + [(from_idx, to_idx)]
+                        heapq.heappush(pq, (new_f, counter, tentative_g, new_state, new_moves))
+                        counter += 1
         
-        return None
+        return None  # No solution found
+    
+    def solve_with_limits(self, max_moves: int = 500, max_depth: int = 100) -> Optional[List[Tuple[int, int]]]:
+        """
+        Solve with limits (for backward compatibility)
+        The A* algorithm already has built-in iteration limits
+        Args:
+            max_moves: Not used (kept for compatibility)
+            max_depth: Not used (kept for compatibility)
+        """
+        return self.solve()
 
