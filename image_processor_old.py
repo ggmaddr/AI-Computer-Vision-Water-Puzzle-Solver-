@@ -8,26 +8,22 @@ import cv2
 from typing import List, Tuple, Dict, Optional
 import colorsys
 import time
-import os
-import pickle
-from sklearn.cluster import KMeans
 
 
 class ImageProcessor:
     """Processes screenshots to extract puzzle state"""
     
-    # HSV color ranges for OpenCV cv2.inRange detection
-    # Format: color_name: ([H_min, S_min, V_min], [H_max, S_max, V_max])
-    # HSV ranges for each color - calibrated from sample.png
-    COLOR_HSV_RANGES = {
-        'pink': ([166, 101, 216], [176, 152, 246]),
-        'red': ([0, 121, 195], [10, 210, 246]),  # Red wraps, but primary range is 0-10
-        'orange': ([9, 169, 221], [30, 205, 255]),
-        'yellow': ([20, 148, 226], [31, 189, 255]),
-        'green': ([68, 98, 204], [80, 140, 230]),
-        'blue': ([107, 188, 205], [117, 226, 228]),
-        'gray': ([0, 0, 79], [180, 52, 209]),
-        'grey': ([0, 0, 79], [180, 52, 209]),  # Alias
+    # Known color templates in RGB (from sample.png analysis)
+    # Used for matching detected colors to color names
+    COLOR_TEMPLATES = {
+        'pink': (236, 105, 144),
+        'green': (108, 220, 158),
+        'orange': (231, 161, 75),
+        'red': (222, 105, 144),
+        'gray': (101, 100, 103),
+        'grey': (101, 100, 103),  # Alias
+        'blue': (33, 80, 218),
+        'yellow': (250, 223, 75),
     }
     
     def __init__(self, game_region: Tuple[int, int, int, int] = None, unit_height: float = None):
@@ -39,25 +35,6 @@ class ImageProcessor:
         """
         self.game_region = game_region
         self.unit_height = unit_height  # Calibrated unit height from user
-        self.trained_model = None
-        self.load_trained_model()  # Try to load trained model if available
-    
-    def load_trained_model(self, model_file: str = 'training_data/color_model.pkl'):
-        """Load trained color model if available (for HSV range updates)"""
-        if os.path.exists(model_file):
-            try:
-                with open(model_file, 'rb') as f:
-                    self.trained_model = pickle.load(f)
-                print(f"✓ Loaded trained color model from {model_file}")
-                # Update HSV ranges if model has them
-                if 'color_models' in self.trained_model:
-                    # Could update HSV ranges from trained data if needed
-                    pass
-                return True
-            except Exception as e:
-                print(f"Warning: Could not load trained model: {e}")
-                print("Using default HSV ranges")
-        return False
     
     def set_game_region(self, top_left: Tuple[int, int], bottom_right: Tuple[int, int]):
         """Set the game screen region"""
@@ -171,22 +148,24 @@ class ImageProcessor:
             if sample_y >= h or sample_y < 0:
                 continue
             
-            # Get pixel block at this row and neighboring rows for better sampling (BGR format)
-            # Sample a few rows around this position for more robust color detection
-            sample_rows = []
-            for dy in [-1, 0, 1]:  # Sample current row and neighbors
-                y_pos = sample_y + dy
-                if 0 <= y_pos < h:
-                    row_segment = tube_img[y_pos, sample_x1:sample_x2]
-                    if row_segment.size > 0 and len(row_segment.shape) == 2 and row_segment.shape[1] == 3:
-                        sample_rows.append(row_segment)
-            
-            if not sample_rows:
+            # Get pixel block at this row (BGR format)
+            row_segment = tube_img[sample_y, sample_x1:sample_x2]
+            if row_segment.size == 0:
                 continue
             
-            # Combine all sampled rows into one array for more pixels to analyze
-            combined_pixels = np.vstack(sample_rows)  # Shape: (total_pixels, 3)
-            row_segment_bgr = combined_pixels.reshape(1, -1, 3)
+            # row_segment is in shape (width, 3) for BGR
+            # Reshape to (1, width, 3) for color detection
+            if len(row_segment.shape) == 2 and row_segment.shape[1] == 3:
+                # Already correct shape, just add batch dimension
+                row_segment_bgr = row_segment.reshape(1, -1, 3)
+            elif len(row_segment.shape) == 1:
+                # Flattened, reshape if it's divisible by 3
+                if row_segment.shape[0] % 3 == 0:
+                    row_segment_bgr = row_segment.reshape(1, -1, 3)
+                else:
+                    continue
+            else:
+                continue
             
             # Use ML-based color detection on the pixel block
             color_name = self._detect_color_from_pixels(row_segment_bgr)
@@ -371,8 +350,7 @@ class ImageProcessor:
     
     def _detect_color_from_pixels(self, pixels: np.ndarray) -> Optional[str]:
         """
-        Detect color from a block of pixels using OpenCV cv2.inRange HSV masking
-        Simple and reliable approach inspired by OpenCV color detection examples
+        Detect color from a block of pixels using median RGB and nearest neighbor matching
         Args:
             pixels: Array of pixels in BGR format, shape (batch, width, 3) or (width, 3)
         Returns:
@@ -383,82 +361,94 @@ class ImageProcessor:
         
         # Handle different input shapes
         if len(pixels.shape) == 3:
+            # (batch, width, 3) - flatten to (batch*width, 3)
             bgr_pixels = pixels.reshape(-1, 3)
         elif len(pixels.shape) == 2 and pixels.shape[1] == 3:
+            # (width, 3) - already flat
             bgr_pixels = pixels
         else:
             return None
         
-        if len(bgr_pixels) < 5:  # Need enough pixels for reliable detection
+        if len(bgr_pixels) == 0:
             return None
+        
+        # Convert BGR to RGB
+        rgb_pixels = bgr_pixels[:, [2, 1, 0]]  # BGR -> RGB
         
         # Check for empty/background - very dark pixels
-        avg_brightness = np.mean(bgr_pixels)
-        if avg_brightness < 50:
+        # Calculate average brightness (value in RGB)
+        avg_brightness = np.mean(rgb_pixels)
+        if avg_brightness < 50:  # Very dark = empty/background
             return None
         
-        # Reshape pixels for OpenCV processing (need 2D array: height x width x 3)
-        # Calculate dimensions
-        num_pixels = len(bgr_pixels)
-        # Reshape to a small image (e.g., 1 row with all pixels, or square-ish)
-        side_len = int(np.sqrt(num_pixels)) + 1
-        padded_size = side_len * side_len
+        # Use median to find dominant color (robust to outliers)
+        dominant_rgb = np.median(rgb_pixels, axis=0).astype(int)
+        r, g, b = int(dominant_rgb[0]), int(dominant_rgb[1]), int(dominant_rgb[2])
         
-        # Pad if necessary
-        if num_pixels < padded_size:
-            padding = np.tile(bgr_pixels[-1:], (padded_size - num_pixels, 1))
-            bgr_pixels_padded = np.vstack([bgr_pixels, padding])
-        else:
-            bgr_pixels_padded = bgr_pixels[:padded_size]
+        # Convert to HSV for better color discrimination (especially pink vs red)
+        rgb_array = np.array([[r, g, b]], dtype=np.uint8).reshape(1, 1, 3)
+        hsv_array = cv2.cvtColor(rgb_array, cv2.COLOR_RGB2HSV)
+        h, s, v = int(hsv_array[0][0][0]), int(hsv_array[0][0][1]), int(hsv_array[0][0][2])
         
-        # Reshape to image format
-        bgr_image = bgr_pixels_padded.reshape(side_len, side_len, 3)
+        # Use explicit HSV-based rules for colors that are close in RGB
+        # Priority order matters for similar colors
         
-        # Convert BGR to HSV
-        hsv_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV)
+        # First check: Gray (low saturation)
+        if s < 60 and 70 <= v <= 220:
+            return 'gray'
         
-        # Count how many pixels match each color range
-        color_matches = {}
+        # Second: Pink vs Red - they're very close, use strict hue check
+        # Pink: H around 171, Red: H around 170 but often lower
+        if h >= 168:  # Higher hue = pink
+            if 140 <= s <= 255 and 200 <= v <= 255:
+                return 'pink'
         
-        for color_name, (lower, upper) in self.COLOR_HSV_RANGES.items():
-            if color_name == 'grey':  # Skip alias
+        # Orange: H around 17, high saturation
+        if 10 <= h <= 25 and s >= 160 and v >= 200:
+            return 'orange'
+        
+        # Yellow: H around 20-30, very high value
+        if 18 <= h <= 35 and s >= 140 and v >= 220:
+            return 'yellow'
+        
+        # Green: H around 60-80
+        if 60 <= h <= 90 and s >= 90 and v >= 190:
+            return 'green'
+        
+        # Blue: H around 105-120
+        if 100 <= h <= 125 and s >= 180 and v >= 200:
+            return 'blue'
+        
+        # Red: Lower hue, or wrap case
+        if (h <= 12 or h >= 165) and s >= 120 and v >= 190:
+            # Make sure it's not pink (pink has higher hue and more saturation)
+            if h < 168 or (h >= 168 and s < 140):
+                return 'red'
+        
+        # Fallback: nearest neighbor in HSV
+        best_match = None
+        min_distance = float('inf')
+        
+        for color_name, (template_r, template_g, template_b) in self.COLOR_TEMPLATES.items():
+            if color_name == 'grey':
                 continue
             
-            # Handle red color wrapping (H: 0-10 or 170-180)
-            if color_name == 'red':
-                # Create two masks for red (wraps around)
-                red_lower1 = np.array([0, lower[1], lower[2]], np.uint8)
-                red_upper1 = np.array([upper[0], upper[1], upper[2]], np.uint8)
-                red_mask1 = cv2.inRange(hsv_image, red_lower1, red_upper1)
-                
-                red_lower2 = np.array([170, lower[1], lower[2]], np.uint8)
-                red_upper2 = np.array([180, upper[1], upper[2]], np.uint8)
-                red_mask2 = cv2.inRange(hsv_image, red_lower2, red_upper2)
-                
-                mask = cv2.bitwise_or(red_mask1, red_mask2)
-            else:
-                # Normal color range
-                lower_bound = np.array(lower, np.uint8)
-                upper_bound = np.array(upper, np.uint8)
-                mask = cv2.inRange(hsv_image, lower_bound, upper_bound)
+            template_rgb = np.array([[template_r, template_g, template_b]], dtype=np.uint8).reshape(1, 1, 3)
+            template_hsv = cv2.cvtColor(template_rgb, cv2.COLOR_RGB2HSV)
+            template_h, template_s, template_v = int(template_hsv[0][0][0]), int(template_hsv[0][0][1]), int(template_hsv[0][0][2])
             
-            # Count matching pixels
-            match_count = np.sum(mask > 0)
-            color_matches[color_name] = match_count
+            # Weighted HSV distance
+            h_dist = min(abs(h - template_h), 180 - abs(h - template_h))
+            distance = h_dist * 5.0 + abs(s - template_s) * 0.5 + abs(v - template_v) * 0.5
+            
+            if distance < min_distance:
+                min_distance = distance
+                best_match = color_name
         
-        # Find color with most matches (must be at least 30% of pixels)
-        if color_matches:
-            max_matches = max(color_matches.values())
-            total_pixels = side_len * side_len
-            
-            # Require at least 30% of pixels to match
-            if max_matches >= total_pixels * 0.3:
-                best_color = max(color_matches, key=color_matches.get)
-                return best_color
+        if min_distance < 100:
+            return best_match
         
         return None
-    
-    # Legacy methods removed - now using cv2.inRange approach
     
     def _match_color(self, hsv_color: np.ndarray) -> str:
         """

@@ -119,6 +119,14 @@ class WaterSortSolverApp:
             else:
                 print(f"  Tube {i}: [empty]")
         
+        # Show diagnostic info if errors detected
+        print("\n" + "=" * 60)
+        print("DIAGNOSTIC INFO")
+        print("=" * 60)
+        print("If colors are wrong, run: python3 diagnose_errors.py")
+        print("To collect training samples: python3 collect_training_data.py")
+        print("To retrain model: python3 train_color_model.py")
+        
         return puzzle_state
     
     def solve_puzzle(self, puzzle_state: dict) -> List[Tuple[int, int]]:
@@ -241,9 +249,10 @@ class WaterSortSolverApp:
         print("=" * 60)
         print("\nThis application will:")
         print("1. Ask you to define the game screen region")
-        print("2. Analyze the puzzle from a screenshot")
-        print("3. Solve the puzzle")
-        print("4. Automatically play the moves")
+        print("2. Calibrate unit height (click top and bottom of one block)")
+        print("3. Analyze the puzzle from a screenshot")
+        print("4. Solve the puzzle")
+        print("5. Automatically play the moves")
         print("\nNote: Keep the game visible on screen!")
         
         input("\nPress Enter to start...")
@@ -256,6 +265,14 @@ class WaterSortSolverApp:
         
         # Initialize image processor
         self.image_processor = ImageProcessor(self.game_region)
+        
+        # Step 1.5: Calibrate unit height
+        print("\n" + "=" * 60)
+        print("Step 1.5: Calibrate Unit Height")
+        print("=" * 60)
+        print("\nThis will help accurately count consecutive same-color blocks.")
+        unit_height = self.image_processor.calibrate_unit_height()
+        self.image_processor.set_unit_height(unit_height)
         
         # Main loop: solve and play until win
         round_number = 1
