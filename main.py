@@ -237,24 +237,21 @@ class WaterSortSolverApp:
             )
             
             if solver_check.is_solved(current_puzzle_state['filledTubelist']):
-                # Try to detect and click the "Next" button
+                # Round completed - detect and click Next button
                 next_button_pos = self.image_processor.detect_next_button()
                 
                 if next_button_pos:
                     import pyautogui
                     pyautogui.click(next_button_pos[0], next_button_pos[1])
-                    time.sleep(2)  # Wait for next level to load
-                    
-                    # Wait a bit for the next puzzle to appear
-                    time.sleep(2)
+                    # Wait 5 seconds for next round to load
+                    time.sleep(5)
                     round_number += 1
+                    # Continue automatically to next round
                 else:
-                    response = input("\nContinue to next round? (y/n): ").lower()
-                    if response != 'y':
-                        break
-                    
+                    # If Next button not found, wait a bit and try to continue anyway
+                    print("Next button not detected, waiting 5 seconds and continuing...")
+                    time.sleep(5)
                     round_number += 1
-                    input("Press Enter when the next puzzle is ready...")
             else:
                 # Try to solve the remaining puzzle
                 remaining_solution = solver_check.solve_with_limits(max_moves=500, max_depth=100)
@@ -263,9 +260,9 @@ class WaterSortSolverApp:
                     self.execute_solution(remaining_solution)
                     time.sleep(2)
                 else:
-                    response = input("\nContinue anyway? (y/n): ").lower()
-                    if response != 'y':
-                        break
+                    # Could not solve remaining - continue to next iteration to retry
+                    print("Could not solve remaining puzzle, retrying...")
+                    time.sleep(2)
         
         print("\n" + "=" * 60)
         print("Application finished. Thank you!")

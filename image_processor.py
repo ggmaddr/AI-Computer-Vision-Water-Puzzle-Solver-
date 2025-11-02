@@ -569,7 +569,7 @@ class ImageProcessor:
     def detect_next_button(self, image: np.ndarray = None) -> Optional[Tuple[int, int]]:
         """
         Detect the "Next" button on the completion screen
-        Looks for a bright yellow button with "Next" text
+        Looks for a yellow button with brown border (rectangular, rounded corners)
         Returns: (x, y) center coordinates of the button in screen coordinates, or None if not found
         """
         if image is None:
@@ -577,16 +577,19 @@ class ImageProcessor:
         
         h, w = image.shape[:2]
         
-        # Convert to HSV for better color detection
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-        
-        # Define yellow color range (bright yellow button)
-        # Yellow in HSV: H=20-30, S=100-255, V=200-255
-        lower_yellow = np.array([20, 100, 200])
-        upper_yellow = np.array([30, 255, 255])
+        # Convert to BGR for color detection (yellow button)
+        # Yellow button: RGB values around (255, 200-255, 0-50) = BGR(0-50, 200-255, 255)
+        # Use BGR ranges for yellow
+        yellow_lower = np.array([0, 180, 200], dtype=np.uint8)
+        yellow_upper = np.array([60, 255, 255], dtype=np.uint8)
         
         # Create mask for yellow pixels
-        yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        yellow_mask = cv2.inRange(image, yellow_lower, yellow_upper)
+        
+        # Apply morphological operations to clean up the mask
+        kernel = np.ones((5, 5), np.uint8)
+        yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_CLOSE, kernel)
+        yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, kernel)
         
         # Find contours of yellow regions
         contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -599,20 +602,20 @@ class ImageProcessor:
             
             # Button should be:
             # - Reasonably sized (not too small, not too large)
-            # - Rectangular-ish (width/height ratio between 2:1 and 4:1)
-            # - Located in lower-middle area of screen
-            if area > 500 and area < 50000:  # Reasonable button size
+            # - Rectangular-ish (width/height ratio between 1.5:1 and 5:1)
+            # - Located in lower-middle area of screen (bottom 40% of screen)
+            if area > 1000 and area < 50000:  # Reasonable button size
                 aspect_ratio = bw / bh if bh > 0 else 0
                 if 1.5 <= aspect_ratio <= 5.0:  # Button-like aspect ratio
-                    # Check if it's in the lower-middle area
+                    # Check if it's in the lower-middle area (bottom 40%)
                     center_y = y + bh // 2
-                    if center_y > h * 0.5:  # In lower half of screen
-                        button_candidates.append((x + bw // 2, y + bh // 2, area))
+                    if center_y > h * 0.6:  # In lower 40% of screen
+                        button_candidates.append((x + bw // 2, y + bh // 2, area, bw, bh))
         
         if button_candidates:
             # Sort by area (largest first) and take the best candidate
             button_candidates.sort(key=lambda x: x[2], reverse=True)
-            bx, by, _ = button_candidates[0]
+            bx, by, _, _, _ = button_candidates[0]
             
             # Convert to screen coordinates
             if self.game_region:
