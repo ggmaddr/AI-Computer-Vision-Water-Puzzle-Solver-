@@ -9,26 +9,27 @@ from typing import List, Tuple, Dict, Optional
 import colorsys
 import time
 import os
-import pickle
-from sklearn.cluster import KMeans
+from datetime import datetime
 
 
 class ImageProcessor:
     """Processes screenshots to extract puzzle state"""
     
-    # HSV color ranges for OpenCV cv2.inRange detection
-    # Format: color_name: ([H_min, S_min, V_min], [H_max, S_max, V_max])
-    # HSV ranges for each color - calibrated from sample.png
-    COLOR_HSV_RANGES = {
-        'pink': ([166, 101, 216], [176, 152, 246]),
-        'red': ([0, 121, 195], [10, 210, 246]),  # Red wraps, but primary range is 0-10
-        'orange': ([9, 169, 221], [30, 205, 255]),
-        'yellow': ([20, 148, 226], [31, 189, 255]),
-        'green': ([68, 98, 204], [80, 140, 230]),
-        'blue': ([107, 188, 205], [117, 226, 228]),
-        'gray': ([0, 0, 79], [180, 52, 209]),
-        'grey': ([0, 0, 79], [180, 52, 209]),  # Alias
+    # Color mapping using BGR ranges (OpenCV uses BGR format)
+    # Format: 'color_name': ((B_min, G_min, R_min), (B_max, G_max, R_max))
+    COLOR_RANGES_BGR = {
+        'red': ((0, 0, 180), (80, 80, 255)),
+        'orange': ((0, 100, 200), (100, 180, 255)),
+        'yellow': ((0, 180, 180), (100, 255, 255)),
+        'green': ((100, 180, 20), (190, 255, 150)),  # Green/Mint: covers RGB(41,223,152)=BGR(152,223,41) and RGB(112,224,147)=BGR(147,224,112)
+        'rose': ((100, 90, 220), (160, 130, 255)),  # Medium pink/rose RGB(239,108,130) = BGR(130,108,239)
+        'blue': ((150, 0, 0), (255, 80, 80)),
+        'gray': ((50, 50, 50), (150, 150, 150)),
     }
+    
+    # Dark blue background range (used to detect empty blocks)
+    # Dark blue background: very dark blue/black
+    DARK_BACKGROUND_BGR = ((0, 0, 0), (60, 60, 60))  # Very dark, slightly blueish
     
     def __init__(self, game_region: Tuple[int, int, int, int] = None, unit_height: float = None):
         """
@@ -39,25 +40,8 @@ class ImageProcessor:
         """
         self.game_region = game_region
         self.unit_height = unit_height  # Calibrated unit height from user
-        self.trained_model = None
-        self.load_trained_model()  # Try to load trained model if available
-    
-    def load_trained_model(self, model_file: str = 'training_data/color_model.pkl'):
-        """Load trained color model if available (for HSV range updates)"""
-        if os.path.exists(model_file):
-            try:
-                with open(model_file, 'rb') as f:
-                    self.trained_model = pickle.load(f)
-                print(f"✓ Loaded trained color model from {model_file}")
-                # Update HSV ranges if model has them
-                if 'color_models' in self.trained_model:
-                    # Could update HSV ranges from trained data if needed
-                    pass
-                return True
-            except Exception as e:
-                print(f"Warning: Could not load trained model: {e}")
-                print("Using default HSV ranges")
-        return False
+        self.current_turn = 1  # Track current turn number for logging
+        self.logs_dir = "logs"  # Base directory for logs
     
     def set_game_region(self, top_left: Tuple[int, int], bottom_right: Tuple[int, int]):
         """Set the game screen region"""
@@ -117,354 +101,401 @@ class ImageProcessor:
         """Set the calibrated unit height from user measurement"""
         self.unit_height = unit_height
     
-    def extract_tube_colors(self, image: np.ndarray, tube_rect: Tuple[int, int, int, int]) -> List[str]:
+    def set_turn(self, turn: int):
+        """Set the current turn number for logging"""
+        self.current_turn = turn
+    
+    def _ensure_log_directories(self, turn: int, tube_idx: int):
+        """Ensure log directories exist for a specific turn and tube"""
+        turn_dir = os.path.join(self.logs_dir, f"turn{turn}")
+        tube_dir = os.path.join(turn_dir, f"tube{tube_idx}")
+        os.makedirs(tube_dir, exist_ok=True)
+        return tube_dir
+    
+    def _save_block_image(self, block_img: np.ndarray, turn: int, tube_idx: int, block_idx: int, color_name: str):
+        """Save a color block image to the log directory"""
+        try:
+            tube_dir = self._ensure_log_directories(turn, tube_idx)
+            filename = f"block{block_idx}_{color_name}.png"
+            filepath = os.path.join(tube_dir, filename)
+            cv2.imwrite(filepath, block_img)
+        except Exception as e:
+            print(f"Warning: Could not save block image: {e}")
+    
+    def _save_tube_image(self, tube_img: np.ndarray, turn: int, tube_idx: int):
+        """Save the full tube image for debugging"""
+        try:
+            tube_dir = self._ensure_log_directories(turn, tube_idx)
+            filename = f"tube{tube_idx}_full.png"
+            filepath = os.path.join(tube_dir, filename)
+            cv2.imwrite(filepath, tube_img)
+        except Exception as e:
+            print(f"Warning: Could not save tube image: {e}")
+    
+    def extract_tube_colors(self, image: np.ndarray, tube_rect: Tuple[int, int, int, int], tube_idx: int = 0) -> List[str]:
         """
-        Extract colors from a tube from bottom to top
-        Detects continuous color blocks representing liquid levels
+        SUPER SIMPLE: Get exactly 5 images per tube (1 full + 4 blocks)
+        - Start at 10% from bottom
+        - Jump 20% up 4 times
+        - Get pixel, get color, save picture, move to next block
+        
         Args:
             image: Full game image
             tube_rect: (x, y, width, height) of the tube
-        Returns: List of color names from bottom to top (each element = one liquid unit)
+            tube_idx: Index of the tube (for logging)
+        Returns: List of color names from bottom to top (non-empty blocks only)
         """
         x, y, w, h = tube_rect
         
-        if self.unit_height is None:
-            raise ValueError("Unit height not calibrated. Call calibrate_unit_height() first.")
-        
-        # Extract tube region
-        tube_img = image[y:y+h, x:x+w]
-        
+        # Extract tube image
+        tube_img = image[y:y+h, x:x+w].copy()
         if tube_img.size == 0:
             return []
         
-        # Scan from bottom to top, detecting continuous color blocks
-        # This approach detects each liquid unit as a separate color block
-        colors = []
-        max_units = 4  # Maximum liquid units per tube
+        # Create annotated copy for drawing block indices
+        annotated_tube = tube_img.copy()
         
+        # Setup: center X, start at 10% from bottom, jump 20% each time
         center_x = w // 2
-        sample_width = max(5, w // 4)
-        sample_x1 = max(0, center_x - sample_width // 2)
-        sample_x2 = min(w, center_x + sample_width // 2)
+        jump_distance = h * 0.2  # 20% of tube height
+        start_y = int(h - (h * 0.1))  # 10% from bottom
         
-        if sample_x2 <= sample_x1:
-            return []
+        colors = []
+        block_positions = []  # Store positions for annotation
         
-        # Estimate liquid unit height (each unit is roughly h/4)
-        unit_height = h / max_units
-        
-        # Scan from bottom to top with fine steps to detect color transitions
-        sample_step = max(2, int(h / 50))  # Sample every few pixels
-        
-        current_block_color = None
-        current_block_samples = []
-        block_start_y = None
-        
-        # Track all detected color blocks
-        color_blocks = []  # List of (color, start_y, end_y)
-        
-        # Use finer sampling for better detection of all segments
-        # Sample more frequently to catch all color transitions
-        # Skip the very bottom pixels (rounded tube bottom) - start from slightly higher
-        bottom_offset = max(3, int(h / 20))  # Skip bottom 5% or at least 3 pixels
-        for sample_y in range(h - 1 - bottom_offset, -1, -sample_step):
-            if sample_y >= h or sample_y < 0:
-                continue
+        # Process exactly 4 blocks (Images 2-5)
+        for block_idx in range(4):
+            # Calculate Y position: start at 10%, then jump 20% up each time
+            block_y = int(start_y - (block_idx * jump_distance))
             
-            # Get pixel block at this row and neighboring rows for better sampling (BGR format)
-            # Sample a few rows around this position for more robust color detection
-            sample_rows = []
-            for dy in [-1, 0, 1]:  # Sample current row and neighbors
-                y_pos = sample_y + dy
-                if 0 <= y_pos < h:
-                    row_segment = tube_img[y_pos, sample_x1:sample_x2]
-                    if row_segment.size > 0 and len(row_segment.shape) == 2 and row_segment.shape[1] == 3:
-                        sample_rows.append(row_segment)
+            # Ensure Y is within bounds
+            block_y = max(0, min(h - 1, block_y))
             
-            if not sample_rows:
-                continue
+            # Store position for annotation
+            block_positions.append((center_x, block_y))
             
-            # Combine all sampled rows into one array for more pixels to analyze
-            combined_pixels = np.vstack(sample_rows)  # Shape: (total_pixels, 3)
-            row_segment_bgr = combined_pixels.reshape(1, -1, 3)
+            # Get pixel at center X, calculated Y
+            pixel_bgr = tube_img[block_y, center_x]
+            b, g, r = int(pixel_bgr[0]), int(pixel_bgr[1]), int(pixel_bgr[2])
             
-            # Use ML-based color detection on the pixel block
-            color_name = self._detect_color_from_pixels(row_segment_bgr)
+            # Get color
+            detected_color = self._match_color_rgb(pixel_bgr)
             
-            # Detect color transitions
-            if color_name:
-                if current_block_color is None:
-                    # Start new block
-                    current_block_color = color_name
-                    block_start_y = sample_y
-                    current_block_samples = [color_name]
-                elif color_name == current_block_color:
-                    # Same color continues
-                    current_block_samples.append(color_name)
-                else:
-                    # Color changed - finalize previous block
-                    # Accept blocks with at least 1 sample (more sensitive)
-                    if current_block_color and len(current_block_samples) >= 1:
-                        color_blocks.append((current_block_color, block_start_y, sample_y))
-                    
-                    # Start new block
-                    current_block_color = color_name
-                    block_start_y = sample_y
-                    current_block_samples = [color_name]
-            else:
-                # Empty/transparent detected - end current block if any
-                # Don't add empty segments as blocks
-                if current_block_color and len(current_block_samples) >= 1:
-                    color_blocks.append((current_block_color, block_start_y, sample_y))
-                current_block_color = None
-                block_start_y = None
-                current_block_samples = []
+            # If empty (darkbackground or None), use 'empty' as color name for saving
+            color_name = detected_color if detected_color and detected_color != 'darkbackground' else 'empty'
+            
+            # Save block image (always save, even if empty)
+            pixel_img = np.zeros((10, 10, 3), dtype=np.uint8)
+            pixel_img[:, :] = pixel_bgr
+            # self._save_block_image(pixel_img, self.current_turn, tube_idx, block_idx, color_name)
+            # print(f"✓ Tube {tube_idx}: Saved block{block_idx}_{color_name}.png")
+            
+            # Only add non-empty colors to result list
+            if detected_color and detected_color != 'darkbackground':
+                colors.append(detected_color)
         
-        # Finalize last block if any
-        if current_block_color and len(current_block_samples) >= 1:
-            color_blocks.append((current_block_color, block_start_y, 0))
+        # Draw block index numbers in red at each sampling point
+        for block_idx, (px_x, px_y) in enumerate(block_positions):
+            # Draw red text showing block index
+            # Use a visible font size based on tube dimensions
+            font_scale = max(0.5, min(w, h) / 100.0)
+            thickness = max(1, int(font_scale * 2))
+            
+            # Draw the number in red (BGR format: (0, 0, 255) = red)
+            cv2.putText(annotated_tube, str(block_idx), (px_x, px_y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), thickness)
         
-        # Convert blocks to color list (one color per unit)
-        # Use calibrated unit_height to accurately count consecutive same-color blocks
-        # color_blocks are in order from bottom (h-1) to top (0) since we scanned that way
-        # block_start is higher y value (bottom), block_end is lower y value (top)
-        # So first block in list is bottom, last is top - KEEP this order (don't reverse)
-        
-        if not color_blocks:
-            return []
-        
-        # Use the calibrated unit height to determine how many units each block represents
-        unit_height = self.unit_height
-        
-        for block_color, block_start, block_end in color_blocks:  # Keep original order (bottom to top)
-            block_height = abs(block_start - block_end)
-            
-            if block_height == 0:
-                # Very small block - count as 1 unit
-                num_units = 1
-            else:
-                # Calculate units using calibrated unit height
-                # Divide block height by unit height to get number of units
-                units_float = block_height / unit_height
-                
-                # Round to nearest integer, but be smart about it
-                # Round to nearest: 0.5-1.5 = 1, 1.5-2.5 = 2, etc.
-                num_units = max(1, int(round(units_float)))
-                
-                # Ensure we don't exceed reasonable bounds
-                num_units = min(num_units, max_units)
-            
-            # Don't exceed max_units total
-            remaining_slots = max_units - len(colors)
-            if remaining_slots <= 0:
-                break
-            
-            num_units = min(num_units, remaining_slots)
-            
-            # Add the color for each unit this block represents
-            for _ in range(num_units):
-                colors.append(block_color)
-                if len(colors) >= max_units:
-                    break
-            
-            if len(colors) >= max_units:
-                break
+        # Save annotated full tube image (Image 1/5)
+        # self._save_tube_image(annotated_tube, self.current_turn, tube_idx)
+        # print(f"✓ Tube {tube_idx}: Saved annotated full tube image with block indices")
         
         return colors
+        
+        # # ===================================================================
+        # # STEP 3: Define inner region to avoid borders
+        # # Tube borders are light gray, so we exclude edges to sample only liquid color
+        # # ===================================================================
+        # border_margin_x = max(2, int(w * 0.15))  # Horizontal margin to exclude borders (~15% from each side)
+        # border_margin_y = max(2, int(h * 0.05))    # Small vertical margin (~5% from top/bottom)
+        
+        # inner_x1 = border_margin_x
+        # inner_x2 = w - border_margin_x
+        # inner_w = inner_x2 - inner_x1
+        
+        # print(f"\n🔲 Border exclusion:")
+        # print(f"   Horizontal margins: {border_margin_x}px from each side")
+        # print(f"   Inner region: x=[{inner_x1}, {inner_x2}], width={inner_w}px")
+        
+        # # Sample region: center of inner area, very small to get only color
+        # center_x = inner_x1 + inner_w // 2
+        # sample_size = max(3, min(10, inner_w // 3))  # Very small sample (3-10 pixels)
+        # sample_x1 = center_x - sample_size // 2
+        # sample_x2 = center_x + sample_size // 2
+        
+        # print(f"   Sample region: x=[{sample_x1}, {sample_x2}], size={sample_size}px")
+        
+        # # ===================================================================
+        # # STEP 4: Calculate starting position (account for rounded bottom)
+        # # ===================================================================
+        # tube_bottom = h - 1
+        # bottom_padding = max(5, int(h * 0.1))  # Skip rounded bottom area
+        
+        # print(f"\n📍 Starting position:")
+        # print(f"   Tube bottom: y={tube_bottom}")
+        # print(f"   Bottom padding (rounded base): {bottom_padding}px")
+        
+        # # ===================================================================
+        # # STEP 5: Detect blocks from BOTTOM TO TOP (block 0 = bottom, block 3 = top)
+        # # Each block is fixed size (unit_height), bounded by light gray borders
+        # # ===================================================================
+        # print(f"\n{'='*60}")
+        # print(f"🎯 DETECTING BLOCKS (bottom to top):")
+        # print(f"{'='*60}")
+        
+        # detected_blocks = []
+        
+        # for block_idx in range(max_blocks):
+        #     print(f"\n--- BLOCK {block_idx} (position from bottom) ---")
+            
+        #     # ===============================================================
+        #     # BLOCK DETECTION: Calculate block center Y position
+        #     # Block positions jump by unit_height from bottom to top:
+        #     # - Block 0 (bottom): center at (tube_bottom - bottom_padding - unit_height/2)
+        #     # - Block 1: Block 0 center - unit_height
+        #     # - Block 2: Block 0 center - 2*unit_height  
+        #     # - Block 3 (top): Block 0 center - 3*unit_height
+        #     # ===============================================================
+        #     block_center_y = int(tube_bottom - bottom_padding - (block_idx * unit_height) - (unit_height / 2))
+            
+        #     print(f"   📍 Block center Y: {block_center_y}px")
+            
+        #     # Check if we've gone past the top of the tube
+        #     if block_center_y < 0:
+        #         print(f"   ⚠️  Block {block_idx} is beyond tube top - stopping")
+        #         break
+            
+        #     # ===============================================================
+        #     # COLOR SAMPLING: Sample a very small region at block center
+        #     # We sample from inner area only to avoid light gray borders
+        #     # ===============================================================
+        #     sample_y_start = max(border_margin_y, block_center_y - 2)
+        #     sample_y_end = min(h - border_margin_y, block_center_y + 3)
+        #     sample_x_start = max(inner_x1, sample_x1)
+        #     sample_x_end = min(inner_x2, sample_x2)
+            
+        #     print(f"   🔍 Sampling region: x=[{sample_x_start}, {sample_x_end}], y=[{sample_y_start}, {sample_y_end}]")
+            
+        #     if sample_y_end <= sample_y_start or sample_x_end <= sample_x_start:
+        #         print(f"   ⚠️  Invalid sample region - stopping")
+        #         break
+            
+        #     # Extract sample region from inner area and get median HSV
+        #     sample_region_hsv = hsv_tube[sample_y_start:sample_y_end, sample_x_start:sample_x_end]
+            
+        #     if sample_region_hsv.size == 0:
+        #         print(f"   ⚠️  Empty sample region - stopping")
+        #         break
+            
+        #     # Get median HSV from the sample region (more robust than mean)
+        #     if sample_region_hsv.ndim == 3:
+        #         median_hsv = np.median(sample_region_hsv.reshape(-1, 3), axis=0).astype(np.uint8)
+        #     else:
+        #         median_hsv = sample_region_hsv.astype(np.uint8)
+            
+        #     if len(median_hsv) < 3:
+        #         print(f"   ⚠️  Invalid HSV data - stopping")
+        #         break
+            
+        #     print(f"   🎨 Median HSV: H={median_hsv[0]}, S={median_hsv[1]}, V={median_hsv[2]}")
+            
+        #     # ===============================================================
+        #     # COLOR DETECTION: Match HSV to a known color name
+        #     # ===============================================================
+        #     detected_color = self._match_color_improved(median_hsv)
+            
+        #     # If no color detected, this block is empty (or we've reached the top)
+        #     if not detected_color:
+        #         print(f"   ⚪ Block {block_idx}: EMPTY (no color detected)")
+        #         break
+            
+        #     print(f"   ✅ Block {block_idx}: Color detected = '{detected_color}'")
+            
+        #     # ===============================================================
+        #     # BLOCK IMAGE EXTRACTION: Extract the full block image
+        #     # Block boundaries: from (block_center_y - unit_height/2) to (block_center_y + unit_height/2)
+        #     # We exclude borders to get only the liquid color
+        #     # ===============================================================
+        #     block_top_y = max(border_margin_y, int(block_center_y - unit_height / 2))
+        #     block_bottom_y = min(h - border_margin_y, int(block_center_y + unit_height / 2))
+            
+        #     print(f"   📦 Block boundaries: top_y={block_top_y}, bottom_y={block_bottom_y}, height={block_bottom_y-block_top_y+1}px")
+        #     print(f"   🖼️  Extracting inner block image (excluding borders): x=[{inner_x1}, {inner_x2}], y=[{block_top_y}, {block_bottom_y}]")
+            
+        #     # Extract the INNER block image (exclude borders, use inner width)
+        #     # This gives us a clean block image without border contamination
+        #     block_img = tube_img[block_top_y:block_bottom_y+1, inner_x1:inner_x2].copy()
+            
+        #     # Save block image for logging
+        #     filename = f"block{block_idx}_{detected_color}.png"
+        #     print(f"   💾 Saving block image: {filename}")
+        #     self._save_block_image(block_img, self.current_turn, tube_idx, block_idx, detected_color)
+            
+        #     # Add color to result list (bottom to top order)
+        #     colors.append(detected_color)
+        #     print(f"   ✓ Block {block_idx} added: '{detected_color}'")
+            
+        #     # Store for debugging if needed
+        #     detected_blocks.append((detected_color, block_top_y, block_bottom_y))
+        
+        # # ===================================================================
+        # # FINAL RESULT: List of colors from bottom to top
+        # # ===================================================================
+        # print(f"\n{'='*60}")
+        # print(f"✅ TUBE {tube_idx} DETECTION COMPLETE")
+        # print(f"{'='*60}")
+        # print(f"📊 Detected {len(colors)} blocks:")
+        # for i, color in enumerate(colors):
+        #     print(f"   Block {i} (bottom->top): '{color}'")
+        # print(f"\n📋 Result (bottom to top): {colors}")
+        # print(f"{'='*60}\n")
+        
+        # return colors
     
-    def calibrate_unit_height(self) -> float:
-        """
-        Calibrate unit height by asking user to click top and bottom of a single block
-        Returns: The calibrated unit height in pixels
-        """
-        import pyautogui
+    # def calibrate_unit_height(self) -> float:
+    #     """
+    #     Calibrate unit height by asking user to click top and bottom of a single block
+    #     Returns: The calibrated unit height in pixels
+    #     """
+    #     import pyautogui
         
-        print("\n" + "=" * 60)
-        print("UNIT HEIGHT CALIBRATION")
-        print("=" * 60)
-        print("\nPlease click on the BOTTOM of a single color block")
-        print("(e.g., the bottom edge of one liquid unit)")
-        print("You have 5 seconds to position your mouse...")
-        time.sleep(2)
+    #     print("\n" + "=" * 60)
+    #     print("UNIT HEIGHT CALIBRATION")
+    #     print("=" * 60)
+    #     print("\nPlease click on the BOTTOM of a single color block")
+    #     print("(e.g., the bottom edge of one liquid unit)")
+    #     print("You have 5 seconds to position your mouse...")
+    #     time.sleep(2)
         
-        try:
-            from pynput import mouse
+    #     try:
+    #         from pynput import mouse
             
-            bottom_clicked = False
-            bottom_pos = None
+    #         bottom_clicked = False
+    #         bottom_pos = None
             
-            def on_click(x, y, button, pressed):
-                nonlocal bottom_clicked, bottom_pos
-                if pressed and button == mouse.Button.left:
-                    bottom_pos = (x, y)
-                    bottom_clicked = True
-                    return False
+    #         def on_click(x, y, button, pressed):
+    #             nonlocal bottom_clicked, bottom_pos
+    #             if pressed and button == mouse.Button.left:
+    #                 bottom_pos = (x, y)
+    #                 bottom_clicked = True
+    #                 return False
             
-            listener = mouse.Listener(on_click=on_click)
-            listener.start()
+    #         listener = mouse.Listener(on_click=on_click)
+    #         listener.start()
             
-            start_time = time.time()
-            while not bottom_clicked and (time.time() - start_time) < 10:
-                time.sleep(0.1)
+    #         start_time = time.time()
+    #         while not bottom_clicked and (time.time() - start_time) < 10:
+    #             time.sleep(0.1)
             
-            listener.stop()
+    #         listener.stop()
             
-            if not bottom_clicked or not bottom_pos:
-                bottom_pos = pyautogui.position()
-        except ImportError:
-            input("Press Enter after clicking the BOTTOM of a block...")
-            bottom_pos = pyautogui.position()
+    #         if not bottom_clicked or not bottom_pos:
+    #             bottom_pos = pyautogui.position()
+    #     except ImportError:
+    #         input("Press Enter after clicking the BOTTOM of a block...")
+    #         bottom_pos = pyautogui.position()
         
-        print(f"✓ Bottom position recorded: {bottom_pos}")
+    #     print(f"✓ Bottom position recorded: {bottom_pos}")
         
-        print("\nPlease click on the TOP of the SAME color block")
-        print("(e.g., the top edge of the same liquid unit)")
-        print("You have 5 seconds to position your mouse...")
-        time.sleep(2)
+    #     print("\nPlease click on the TOP of the SAME color block")
+    #     print("(e.g., the top edge of the same liquid unit)")
+    #     print("You have 5 seconds to position your mouse...")
+    #     time.sleep(2)
         
-        try:
-            from pynput import mouse
+    #     try:
+    #         from pynput import mouse
             
-            top_clicked = False
-            top_pos = None
+    #         top_clicked = False
+    #         top_pos = None
             
-            def on_click(x, y, button, pressed):
-                nonlocal top_clicked, top_pos
-                if pressed and button == mouse.Button.left:
-                    top_pos = (x, y)
-                    top_clicked = True
-                    return False
+    #         def on_click(x, y, button, pressed):
+    #             nonlocal top_clicked, top_pos
+    #             if pressed and button == mouse.Button.left:
+    #                 top_pos = (x, y)
+    #                 top_clicked = True
+    #                 return False
             
-            listener = mouse.Listener(on_click=on_click)
-            listener.start()
+    #         listener = mouse.Listener(on_click=on_click)
+    #         listener.start()
             
-            start_time = time.time()
-            while not top_clicked and (time.time() - start_time) < 10:
-                time.sleep(0.1)
+    #         start_time = time.time()
+    #         while not top_clicked and (time.time() - start_time) < 10:
+    #             time.sleep(0.1)
             
-            listener.stop()
+    #         listener.stop()
             
-            if not top_clicked or not top_pos:
-                top_pos = pyautogui.position()
-        except ImportError:
-            input("Press Enter after clicking the TOP of the block...")
-            top_pos = pyautogui.position()
+    #         if not top_clicked or not top_pos:
+    #             top_pos = pyautogui.position()
+    #     except ImportError:
+    #         input("Press Enter after clicking the TOP of the block...")
+    #         top_pos = pyautogui.position()
         
-        print(f"✓ Top position recorded: {top_pos}")
+    #     print(f"✓ Top position recorded: {top_pos}")
         
-        # Calculate unit height (absolute difference in y coordinates)
-        if self.game_region:
-            x1, y1, x2, y2 = self.game_region
-            # Convert screen coordinates to relative coordinates
-            bottom_y_rel = bottom_pos[1] - y1
-            top_y_rel = top_pos[1] - y1
-            unit_height = abs(bottom_y_rel - top_y_rel)
-        else:
-            unit_height = abs(bottom_pos[1] - top_pos[1])
+    #     # Calculate unit height (absolute difference in y coordinates)
+    #     if self.game_region:
+    #         x1, y1, x2, y2 = self.game_region
+    #         # Convert screen coordinates to relative coordinates
+    #         bottom_y_rel = bottom_pos[1] - y1
+    #         top_y_rel = top_pos[1] - y1
+    #         unit_height = abs(bottom_y_rel - top_y_rel)
+    #     else:
+    #         unit_height = abs(bottom_pos[1] - top_pos[1])
         
-        self.unit_height = unit_height
+    #     self.unit_height = unit_height
         
-        print(f"\n✓ Unit height calibrated: {unit_height:.1f} pixels")
-        print(f"  This will be used to count consecutive color blocks (1x, 2x, 3x, etc.)\n")
+    #     print(f"\n✓ Unit height calibrated: {unit_height:.1f} pixels")
+    #     print(f"  This will be used to count consecutive color blocks (1x, 2x, 3x, etc.)\n")
         
-        return unit_height
+    #     return unit_height
     
-    def _detect_color_from_pixels(self, pixels: np.ndarray) -> Optional[str]:
+    def _match_color_rgb(self, bgr_color: np.ndarray) -> Optional[str]:
         """
-        Detect color from a block of pixels using OpenCV cv2.inRange HSV masking
-        Simple and reliable approach inspired by OpenCV color detection examples
+        REWRITTEN: Simple RGB/BGR color matching
+        Matches BGR color to one of 7 colors or dark blue background
         Args:
-            pixels: Array of pixels in BGR format, shape (batch, width, 3) or (width, 3)
+            bgr_color: BGR color array [B, G, R] from OpenCV
         Returns:
-            Color name or None if empty/background
+            Color name or 'darkbackground' or None
         """
-        if pixels.size == 0:
-            return None
-        
-        # Handle different input shapes
-        if len(pixels.shape) == 3:
-            bgr_pixels = pixels.reshape(-1, 3)
-        elif len(pixels.shape) == 2 and pixels.shape[1] == 3:
-            bgr_pixels = pixels
-        else:
-            return None
-        
-        if len(bgr_pixels) < 5:  # Need enough pixels for reliable detection
-            return None
-        
-        # Check for empty/background - very dark pixels
-        avg_brightness = np.mean(bgr_pixels)
-        if avg_brightness < 50:
-            return None
-        
-        # Reshape pixels for OpenCV processing (need 2D array: height x width x 3)
-        # Calculate dimensions
-        num_pixels = len(bgr_pixels)
-        # Reshape to a small image (e.g., 1 row with all pixels, or square-ish)
-        side_len = int(np.sqrt(num_pixels)) + 1
-        padded_size = side_len * side_len
-        
-        # Pad if necessary
-        if num_pixels < padded_size:
-            padding = np.tile(bgr_pixels[-1:], (padded_size - num_pixels, 1))
-            bgr_pixels_padded = np.vstack([bgr_pixels, padding])
-        else:
-            bgr_pixels_padded = bgr_pixels[:padded_size]
-        
-        # Reshape to image format
-        bgr_image = bgr_pixels_padded.reshape(side_len, side_len, 3)
-        
-        # Convert BGR to HSV
-        hsv_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV)
-        
-        # Count how many pixels match each color range
-        color_matches = {}
-        
-        for color_name, (lower, upper) in self.COLOR_HSV_RANGES.items():
-            if color_name == 'grey':  # Skip alias
-                continue
-            
-            # Handle red color wrapping (H: 0-10 or 170-180)
-            if color_name == 'red':
-                # Create two masks for red (wraps around)
-                red_lower1 = np.array([0, lower[1], lower[2]], np.uint8)
-                red_upper1 = np.array([upper[0], upper[1], upper[2]], np.uint8)
-                red_mask1 = cv2.inRange(hsv_image, red_lower1, red_upper1)
-                
-                red_lower2 = np.array([170, lower[1], lower[2]], np.uint8)
-                red_upper2 = np.array([180, upper[1], upper[2]], np.uint8)
-                red_mask2 = cv2.inRange(hsv_image, red_lower2, red_upper2)
-                
-                mask = cv2.bitwise_or(red_mask1, red_mask2)
+        # Extract BGR values
+        if isinstance(bgr_color, np.ndarray):
+            if bgr_color.ndim == 1:
+                b, g, r = int(bgr_color[0]), int(bgr_color[1]), int(bgr_color[2])
             else:
-                # Normal color range
-                lower_bound = np.array(lower, np.uint8)
-                upper_bound = np.array(upper, np.uint8)
-                mask = cv2.inRange(hsv_image, lower_bound, upper_bound)
-            
-            # Count matching pixels
-            match_count = np.sum(mask > 0)
-            color_matches[color_name] = match_count
+                b, g, r = int(bgr_color[0][0]), int(bgr_color[0][1]), int(bgr_color[0][2])
+        else:
+            b, g, r = int(bgr_color[0]), int(bgr_color[1]), int(bgr_color[2])
         
-        # Find color with most matches (must be at least 30% of pixels)
-        if color_matches:
-            max_matches = max(color_matches.values())
-            total_pixels = side_len * side_len
-            
-            # Require at least 30% of pixels to match
-            if max_matches >= total_pixels * 0.3:
-                best_color = max(color_matches, key=color_matches.get)
-                return best_color
+        # First check: Dark blue background detection
+        # Dark blue background means the block is empty
+        bg_lower, bg_upper = self.DARK_BACKGROUND_BGR
+        if (bg_lower[0] <= b <= bg_upper[0] and
+            bg_lower[1] <= g <= bg_upper[1] and
+            bg_lower[2] <= r <= bg_upper[2]):
+            return 'darkbackground'
+        
+        # Check each of the 7 liquid colors
+        for color_name, (lower_bgr, upper_bgr) in self.COLOR_RANGES_BGR.items():
+            if (lower_bgr[0] <= b <= upper_bgr[0] and
+                lower_bgr[1] <= g <= upper_bgr[1] and
+                lower_bgr[2] <= r <= upper_bgr[2]):
+                return color_name
         
         return None
     
-    # Legacy methods removed - now using cv2.inRange approach
-    
-    def _match_color(self, hsv_color: np.ndarray) -> str:
-        """
-        Legacy method - kept for compatibility but not used
-        """
-        return None
+    def _match_color_improved(self, hsv_color: np.ndarray) -> Optional[str]:
+        """Legacy method - kept for compatibility"""
+        return self._match_color_rgb(hsv_color)
     
     def analyze_puzzle(self, image: np.ndarray = None) -> Dict:
         """
@@ -489,22 +520,14 @@ class ImageProcessor:
         filled_tubelist = []
         empty_tubes = 0
         
-        # Last two tubes are always empty - skip analyzing them
-        tubes_to_analyze = tubes[:-2] if len(tubes) >= 2 else tubes
-        last_two_count = max(0, len(tubes) - len(tubes_to_analyze))
-        
-        for tube_rect in tubes_to_analyze:
-            colors = self.extract_tube_colors(image, tube_rect)
+        # Analyze ALL tubes (no skipping)
+        for tube_idx, tube_rect in enumerate(tubes):
+            colors = self.extract_tube_colors(image, tube_rect, tube_idx=tube_idx)
             if not colors:
                 empty_tubes += 1
                 filled_tubelist.append([])
             else:
                 filled_tubelist.append(colors)
-        
-        # Add last two tubes as empty (no analysis needed)
-        for _ in range(last_two_count):
-            empty_tubes += 1
-            filled_tubelist.append([])
         
         return {
             'totalTube': total_tubes,

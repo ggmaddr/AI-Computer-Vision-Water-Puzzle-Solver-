@@ -161,7 +161,7 @@ class PuzzleSolver:
         print(f"\n{title}:")
         for i, tube in enumerate(state):
             if tube:
-                print(f"  Tube {i}: {tube} (bottom→top)")
+                print(f"  Tube {i}: {tube}")
             else:
                 print(f"  Tube {i}: [empty]")
     
@@ -185,18 +185,10 @@ class PuzzleSolver:
         Returns: List of (from_tube, to_tube) moves, or None if unsolvable
         """
         if self.debug:
-            print("\n" + "=" * 60)
-            print("SOLVING PUZZLE")
-            print("=" * 60)
             self._print_state(self.initial_state, "Initial State")
-            print()
         
         initial_key = self.state_to_key(self.initial_state)
         initial_h = self.heuristic(self.initial_state)
-        
-        if self.debug:
-            print(f"Heuristic (initial): {initial_h}")
-            print(f"Starting A* search...\n")
         
         # Priority queue: (f_score, counter, g_score, state, moves)
         # Use counter to break ties and ensure FIFO for same f_score
@@ -215,8 +207,8 @@ class PuzzleSolver:
         while pq and iterations < max_iterations:
             iterations += 1
             
-            # Progress logging every 10000 iterations
-            if self.debug and iterations - last_log_iteration >= 10000:
+            # Progress logging every 10000 iterations (disabled)
+            if False and self.debug and iterations - last_log_iteration >= 10000:
                 print(f"Progress: {iterations} iterations, {len(pq)} states in queue, {len(g_score)} states explored")
                 last_log_iteration = iterations
             
@@ -230,21 +222,7 @@ class PuzzleSolver:
             # Check if solved (must have all same-color pieces in one full tube)
             if self.is_solved(current_state):
                 if self.debug:
-                    print(f"\n{'='*60}")
-                    print(f"SOLUTION FOUND in {iterations} iterations!")
-                    print(f"{'='*60}")
                     self._print_state(current_state, "Final State (Solved)")
-                    
-                    # Verify solution is correct
-                    print("\nSolution verification:")
-                    for tube_idx, tube in enumerate(current_state):
-                        if tube:
-                            if len(tube) == self.max_capacity and all(c == tube[0] for c in tube):
-                                print(f"  ✓ Tube {tube_idx}: Full and uniform (all '{tube[0]}')")
-                            else:
-                                print(f"  ✗ Tube {tube_idx}: Issue - {tube}")
-                    
-                    print(f"\nTotal moves: {len(moves)}")
                 return moves
             
             # Try all possible moves
@@ -282,7 +260,8 @@ class PuzzleSolver:
                         counter += 1
         
         if self.debug:
-            print(f"\nNo solution found after {iterations} iterations")
+            # No solution found (silent)
+            pass
         
         return None  # No solution found
     

@@ -263,8 +263,8 @@ class ImageProcessor:
         print("=" * 60)
         print("\nPlease click on the BOTTOM of a single color block")
         print("(e.g., the bottom edge of one liquid unit)")
-        print("You have 5 seconds to position your mouse...")
-        time.sleep(2)
+        print("You have 0.5 seconds to position your mouse...")
+        time.sleep(0.5)
         
         try:
             from pynput import mouse

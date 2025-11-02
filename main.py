@@ -29,16 +29,16 @@ class WaterSortSolverApp:
         print("Step 1: Define Game Screen Region")
         print("=" * 60)
         print("\nPlease click on the TOP-LEFT corner of the game screen...")
-        print("You have 5 seconds to position your mouse, then click...")
-        time.sleep(2)
+        print("You have 0.5 seconds to position your mouse, then click...")
+        time.sleep(0.5)
         
         # Wait for mouse click
         top_left = self._wait_for_click()
         print(f"Top-left corner recorded: {top_left}")
         
         print("\nPlease click on the BOTTOM-RIGHT corner of the game screen...")
-        print("You have 5 seconds to position your mouse, then click...")
-        time.sleep(2)
+        print("You have 0.5 seconds to position your mouse, then click...")
+        time.sleep(0.5)
         
         bottom_right = self._wait_for_click()
         print(f"Bottom-right corner recorded: {bottom_right}")
@@ -119,14 +119,6 @@ class WaterSortSolverApp:
             else:
                 print(f"  Tube {i}: [empty]")
         
-        # Show diagnostic info if errors detected
-        print("\n" + "=" * 60)
-        print("DIAGNOSTIC INFO")
-        print("=" * 60)
-        print("If colors are wrong, run: python3 diagnose_errors.py")
-        print("To collect training samples: python3 collect_training_data.py")
-        print("To retrain model: python3 train_color_model.py")
-        
         return puzzle_state
     
     def solve_puzzle(self, puzzle_state: dict) -> List[Tuple[int, int]]:
@@ -145,63 +137,11 @@ class WaterSortSolverApp:
             debug=True  # Enable detailed logging
         )
         
-        print("Searching for solution...")
         solution = solver.solve_with_limits(max_moves=500, max_depth=100)
-        
-        if solution:
-            # Print solution with color details
-            print("\n" + "=" * 60)
-            print("SOLUTION MOVES (with colors):")
-            print("=" * 60)
-            
-            # Reconstruct state to show colors for each move
-            current_state = [list(tube) for tube in puzzle_state['filledTubelist']]
-            
-            # Print initial state
-            print("\nInitial State:")
-            for idx, tube in enumerate(current_state):
-                if tube:
-                    print(f"  Tube {idx}: {tube}")
-                else:
-                    print(f"  Tube {idx}: [empty]")
-            
-            for i, (from_tube, to_tube) in enumerate(solution, 1):
-                # Get color being poured
-                if current_state[from_tube]:
-                    top_color = current_state[from_tube][-1]
-                    block_size = solver.count_top_colors(current_state[from_tube])
-                    print(f"\n{'='*60}")
-                    print(f"Move {i}/{len(solution)}: Pour {block_size} unit(s) of '{top_color}' from Tube {from_tube} → Tube {to_tube}")
-                    print(f"{'='*60}")
-                    
-                    # Apply move
-                    current_state = solver.pour(current_state, from_tube, to_tube, block_size)
-                    
-                    # Print state of ALL tubes after this move
-                    print(f"\nState after move {i}:")
-                    for idx, tube in enumerate(current_state):
-                        if tube:
-                            print(f"  Tube {idx}: {tube}")
-                        else:
-                            print(f"  Tube {idx}: [empty]")
-                else:
-                    print(f"\nMove {i}: ERROR - Tube {from_tube} is empty!")
-                    # Still print state even if error
-                    print(f"\nState after move {i}:")
-                    for idx, tube in enumerate(current_state):
-                        if tube:
-                            print(f"  Tube {idx}: {tube}")
-                        else:
-                            print(f"  Tube {idx}: [empty]")
         
         if not solution:
             print("ERROR: Could not find solution!")
             return None
-        
-        print(f"\nSolution found! Total moves: {len(solution)}")
-        print("\nSolution moves:")
-        for i, (from_tube, to_tube) in enumerate(solution, 1):
-            print(f"  {i}. Pour from tube {from_tube} to tube {to_tube}")
         
         return solution
     
@@ -209,10 +149,6 @@ class WaterSortSolverApp:
         """
         Execute the solution using mouse automation
         """
-        print("\n" + "=" * 60)
-        print("Step 4: Executing Solution")
-        print("=" * 60)
-        
         if not self.mouse_controller:
             # Create mouse controller with current state
             x1, y1 = self.game_region[0], self.game_region[1]
@@ -226,13 +162,9 @@ class WaterSortSolverApp:
         time.sleep(3)
         
         self.mouse_controller.execute_moves(moves, delay_between_moves=0.8)
-        
-        print("\nSolution execution complete!")
     
     def check_if_solved(self) -> bool:
         """Check if puzzle is solved by analyzing current state"""
-        print("\nChecking if puzzle is solved...")
-        
         puzzle_state = self.analyze_puzzle()
         solver = PuzzleSolver(
             puzzle_state['totalTube'],
@@ -266,14 +198,6 @@ class WaterSortSolverApp:
         # Initialize image processor
         self.image_processor = ImageProcessor(self.game_region)
         
-        # Step 1.5: Calibrate unit height
-        print("\n" + "=" * 60)
-        print("Step 1.5: Calibrate Unit Height")
-        print("=" * 60)
-        print("\nThis will help accurately count consecutive same-color blocks.")
-        unit_height = self.image_processor.calibrate_unit_height()
-        self.image_processor.set_unit_height(unit_height)
-        
         # Main loop: solve and play until win
         round_number = 1
         
@@ -281,6 +205,9 @@ class WaterSortSolverApp:
             print(f"\n{'=' * 60}")
             print(f"ROUND {round_number}")
             print(f"{'=' * 60}")
+            
+            # Set turn number for logging
+            self.image_processor.set_turn(round_number)
             
             # Step 2: Analyze puzzle
             puzzle_state = self.analyze_puzzle()
@@ -299,7 +226,6 @@ class WaterSortSolverApp:
             time.sleep(2)
             
             # Re-analyze to check current state
-            print("\nChecking if puzzle is solved...")
             current_puzzle_state = self.analyze_puzzle()
             
             # Check if truly solved
@@ -311,52 +237,32 @@ class WaterSortSolverApp:
             )
             
             if solver_check.is_solved(current_puzzle_state['filledTubelist']):
-                print("\n🎉 Puzzle fully solved!")
-                
                 # Try to detect and click the "Next" button
-                print("\nLooking for 'Next' button...")
                 next_button_pos = self.image_processor.detect_next_button()
                 
                 if next_button_pos:
-                    print(f"✓ Found Next button at {next_button_pos}")
-                    print("Clicking Next button...")
                     import pyautogui
                     pyautogui.click(next_button_pos[0], next_button_pos[1])
                     time.sleep(2)  # Wait for next level to load
-                    print("✓ Clicked Next button")
                     
                     # Wait a bit for the next puzzle to appear
                     time.sleep(2)
                     round_number += 1
                 else:
-                    print("⚠️  Could not find Next button automatically")
                     response = input("\nContinue to next round? (y/n): ").lower()
                     if response != 'y':
                         break
                     
                     round_number += 1
-                    print("\nWaiting for next puzzle to appear...")
                     input("Press Enter when the next puzzle is ready...")
             else:
-                print("\n⚠️  Puzzle not fully solved yet. Analyzing remaining moves...")
-                
-                # Print current state
-                print("\nCurrent State:")
-                for idx, tube in enumerate(current_puzzle_state['filledTubelist']):
-                    if tube:
-                        print(f"  Tube {idx}: {tube}")
-                    else:
-                        print(f"  Tube {idx}: [empty]")
-                
                 # Try to solve the remaining puzzle
                 remaining_solution = solver_check.solve_with_limits(max_moves=500, max_depth=100)
                 
                 if remaining_solution:
-                    print(f"\nFound {len(remaining_solution)} more moves to complete the puzzle.")
                     self.execute_solution(remaining_solution)
                     time.sleep(2)
                 else:
-                    print("\n⚠️  Could not find solution for remaining puzzle.")
                     response = input("\nContinue anyway? (y/n): ").lower()
                     if response != 'y':
                         break
