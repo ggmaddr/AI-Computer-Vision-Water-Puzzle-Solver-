@@ -86,38 +86,58 @@ class WaterSortSolverApp:
             pos = pyautogui.position()
             return (int(pos[0]), int(pos[1]))
     
-    def analyze_puzzle(self) -> dict:
+    def analyze_puzzle(self, silent: bool = False) -> dict:
         """
         Capture and analyze current puzzle state
         Returns: Puzzle parameters dict
         """
-        print("\n" + "=" * 60)
-        print("Step 2: Analyzing Puzzle")
-        print("=" * 60)
+        if not silent:
+            print("\n" + "=" * 60)
+            print("Step 2: Analyzing Puzzle")
+            print("=" * 60)
+            
+            print("Capturing screenshot...")
         
-        print("Capturing screenshot...")
         image = self.image_processor.capture_screen()
         
-        print("Detecting tubes and extracting colors...")
+        if not silent:
+            print("Detecting tubes and extracting colors...")
+        
         puzzle_state = self.image_processor.analyze_puzzle(image)
         
         # Store tube positions for mouse control
         tubes = self.image_processor.detect_tubes(image)
         if not tubes:
             tubes = self.image_processor._detect_tubes_grid(image)
+        
+        # Validate that we detected the correct number of tubes
+        expected_tubes = puzzle_state['totalTube']
+        if len(tubes) != expected_tubes:
+            if not silent:
+                print(f"\n⚠️  WARNING: Detected {len(tubes)} tube positions but puzzle has {expected_tubes} tubes!")
+                print("This may cause errors. Trying to continue anyway...")
+        
         self.tube_positions = tubes
         
-        print(f"\nPuzzle Analysis Results:")
-        print(f"  Total Tubes: {puzzle_state['totalTube']}")
-        print(f"  Empty Tubes: {puzzle_state['emptyTubeNumbers']}")
-        print(f"  Filled Tubes: {len([t for t in puzzle_state['filledTubelist'] if t])}")
+        # Update mouse controller with new tube positions (important after each round)
+        if self.mouse_controller:
+            x1, y1 = self.game_region[0], self.game_region[1]
+            x2, y2 = self.game_region[2], self.game_region[3]
+            self.mouse_controller.tube_positions = tubes
+            self.mouse_controller.game_region = (x1, y1, x2, y2)
         
-        print("\nTube Contents (bottom to top):")
-        for i, tube in enumerate(puzzle_state['filledTubelist']):
-            if tube:
-                print(f"  Tube {i}: {tube}")
-            else:
-                print(f"  Tube {i}: [empty]")
+        # if not silent:
+        #     print(f"\nPuzzle Analysis Results:")
+        #     print(f"  Total Tubes: {puzzle_state['totalTube']}")
+        #     print(f"  Empty Tubes: {puzzle_state['emptyTubeNumbers']}")
+        #     print(f"  Filled Tubes: {len([t for t in puzzle_state['filledTubelist'] if t])}")
+            
+        #     print("\nTube Contents (bottom to top):")
+        #     for i, tube in enumerate(puzzle_state['filledTubelist']):
+        #         if tube:
+        #             print(f"  Tube {i}: {tube}")
+        #         else:
+        #             print(f"  Tube {i}: [empty]")
         
         return puzzle_state
     
@@ -149,14 +169,22 @@ class WaterSortSolverApp:
         """
         Execute the solution using mouse automation
         """
-        if not self.mouse_controller:
-            # Create mouse controller with current state
-            x1, y1 = self.game_region[0], self.game_region[1]
-            x2, y2 = self.game_region[2], self.game_region[3]
-            self.mouse_controller = MouseController(
-                (x1, y1, x2, y2),
-                self.tube_positions
+        # Validate that all tube indices in moves are within range
+        max_tube_index = max(max(from_tube, to_tube) for from_tube, to_tube in moves) if moves else -1
+        if max_tube_index >= len(self.tube_positions):
+            raise ValueError(
+                f"Solution contains tube index {max_tube_index} but only {len(self.tube_positions)} "
+                f"tubes detected. Puzzle analysis may be incorrect."
             )
+        
+        # Always recreate mouse controller with current tube positions
+        # This ensures we have the correct positions after each round
+        x1, y1 = self.game_region[0], self.game_region[1]
+        x2, y2 = self.game_region[2], self.game_region[3]
+        self.mouse_controller = MouseController(
+            (x1, y1, x2, y2),
+            self.tube_positions
+        )
         
         print("Starting in 3 seconds... Move mouse to corner to abort (failsafe)...")
         time.sleep(3)
@@ -188,8 +216,28 @@ class WaterSortSolverApp:
         print("\nNote: Keep the game visible on screen!")
         
         input("\nPress Enter to start...")
+        # Step 1: Get Next button position
+        print("\n" + "=" * 60)
+        print("Step 1: Click the Next Button")
+        print("=" * 60)
+        print("Please click on the Next button (you can click it now or wait for it to appear)")
+        #wait for click or press enter to continue, if press enter, next_button_pos = (242, 565) by default
+        next_button_pos = (242, 565)
+        response = input("Press Enter to use default position, or position mouse and press Enter...")
+        if response == "":
+            next_button_pos = (242, 565)
+        else:
+            next_button_pos = self._wait_for_click()
         
-        # Step 1: Setup game region
+        self.next_button_pos = next_button_pos
+        print(f"✓ Next button position saved: {next_button_pos}")
+    
+        self.start_button_pos = (360, 243)
+        
+        # Step 2: Setup game region
+        print("\n" + "=" * 60)
+        print("Step 2: Define Game Region")
+        print("=" * 60)
         top_left, bottom_right = self.setup_game_region()
         x1, y1 = int(top_left[0]), int(top_left[1])
         x2, y2 = int(bottom_right[0]), int(bottom_right[1])
@@ -197,6 +245,9 @@ class WaterSortSolverApp:
         
         # Initialize image processor
         self.image_processor = ImageProcessor(self.game_region)
+        
+        # Number of rounds before clicking Start button instead of Next
+        nround = 42
         
         # Main loop: solve and play until win
         round_number = 1
@@ -222,48 +273,25 @@ class WaterSortSolverApp:
             # Step 4: Execute
             self.execute_solution(solution)
             
-            # Wait for game to update after moves
+            # Wait 2 seconds for button to appear
             time.sleep(2)
             
-            # Re-analyze to check current state
-            current_puzzle_state = self.analyze_puzzle()
-            
-            # Check if truly solved
-            solver_check = PuzzleSolver(
-                current_puzzle_state['totalTube'],
-                current_puzzle_state['emptyTubeNumbers'],
-                current_puzzle_state['filledTubelist'],
-                debug=False
-            )
-            
-            if solver_check.is_solved(current_puzzle_state['filledTubelist']):
-                # Round completed - detect and click Next button
-                next_button_pos = self.image_processor.detect_next_button()
-                
-                if next_button_pos:
-                    import pyautogui
-                    pyautogui.click(next_button_pos[0], next_button_pos[1])
-                    # Wait 5 seconds for next round to load
-                    time.sleep(5)
-                    round_number += 1
-                    # Continue automatically to next round
-                else:
-                    # If Next button not found, wait a bit and try to continue anyway
-                    print("Next button not detected, waiting 5 seconds and continuing...")
-                    time.sleep(5)
-                    round_number += 1
-            else:
-                # Try to solve the remaining puzzle
-                remaining_solution = solver_check.solve_with_limits(max_moves=500, max_depth=100)
-                
-                if remaining_solution:
-                    self.execute_solution(remaining_solution)
-                    time.sleep(2)
-                else:
-                    # Could not solve remaining - continue to next iteration to retry
-                    print("Could not solve remaining puzzle, retrying...")
-                    time.sleep(2)
-        
+            # Determine which button to click based on round number
+            import pyautogui
+
+            # Click Next button for other rounds
+            print(f"Clicking Next button (round {round_number})")
+            pyautogui.moveTo(self.next_button_pos[0], self.next_button_pos[1], duration=0.5)
+            pyautogui.click(self.next_button_pos[0], self.next_button_pos[1])
+            time.sleep(2)
+            round_number += 1
+            if round_number % nround == 0:
+                # Click Start button every nround rounds (41, 82, 123, etc.)
+                print(f"Round {round_number} is a multiple of {nround} - clicking Start button")
+                pyautogui.moveTo(self.start_button_pos[0], self.start_button_pos[1], duration=0.5)
+                pyautogui.click(self.start_button_pos[0], self.start_button_pos[1])
+                time.sleep(2)
+                    
         print("\n" + "=" * 60)
         print("Application finished. Thank you!")
         print("=" * 60)

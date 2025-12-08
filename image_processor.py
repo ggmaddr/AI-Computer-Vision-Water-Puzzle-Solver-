@@ -10,6 +10,7 @@ import colorsys
 import time
 import os
 from datetime import datetime
+import re
 
 
 class ImageProcessor:
@@ -25,6 +26,7 @@ class ImageProcessor:
         'rose': ((100, 90, 220), (160, 130, 255)),  # Medium pink/rose RGB(239,108,130) = BGR(130,108,239)
         'blue': ((150, 0, 0), (255, 80, 80)),
         'gray': ((50, 50, 50), (150, 150, 150)),
+        'purple': ((120, 0, 130), (170, 30, 180)),  # Purple: RGB(157,1,145)=BGR(145,1,157), HEX #9d0191
     }
     
     # Dark blue background range (used to detect empty blocks)
@@ -152,13 +154,17 @@ class ImageProcessor:
         if tube_img.size == 0:
             return []
         
+        # Get actual tube image dimensions (may differ from tube_rect due to bounds)
+        img_h, img_w = tube_img.shape[:2]
+        
         # Create annotated copy for drawing block indices
         annotated_tube = tube_img.copy()
         
         # Setup: center X, start at 10% from bottom, jump 20% each time
-        center_x = w // 2
-        jump_distance = h * 0.2  # 20% of tube height
-        start_y = int(h - (h * 0.1))  # 10% from bottom
+        # Use actual image dimensions, not tube_rect dimensions
+        center_x = img_w // 2
+        jump_distance = img_h * 0.2  # 20% of actual tube image height
+        start_y = int(img_h - (img_h * 0.1))  # 10% from bottom of actual image
         
         colors = []
         block_positions = []  # Store positions for annotation
@@ -168,14 +174,15 @@ class ImageProcessor:
             # Calculate Y position: start at 10%, then jump 20% up each time
             block_y = int(start_y - (block_idx * jump_distance))
             
-            # Ensure Y is within bounds
-            block_y = max(0, min(h - 1, block_y))
+            # Ensure coordinates are within bounds of actual image
+            block_y = max(0, min(img_h - 1, block_y))
+            center_x_safe = max(0, min(img_w - 1, center_x))
             
-            # Store position for annotation
-            block_positions.append((center_x, block_y))
+            # Store position for annotation (use safe center_x)
+            block_positions.append((center_x_safe, block_y))
             
-            # Get pixel at center X, calculated Y
-            pixel_bgr = tube_img[block_y, center_x]
+            # Get pixel at center X, calculated Y (use safe coordinates)
+            pixel_bgr = tube_img[block_y, center_x_safe]
             b, g, r = int(pixel_bgr[0]), int(pixel_bgr[1]), int(pixel_bgr[2])
             
             # Get color
@@ -207,7 +214,7 @@ class ImageProcessor:
         
         # Save annotated full tube image (Image 1/5)
         # self._save_tube_image(annotated_tube, self.current_turn, tube_idx)
-        # print(f"✓ Tube {tube_idx}: Saved annotated full tube image with block indices")
+        # print(f" Tube {tube_idx}: Saved annotated full tube image with block indices")
         
         return colors
         
@@ -566,65 +573,5 @@ class ImageProcessor:
         
         return tubes
     
-    def detect_next_button(self, image: np.ndarray = None) -> Optional[Tuple[int, int]]:
-        """
-        Detect the "Next" button on the completion screen
-        Looks for a yellow button with brown border (rectangular, rounded corners)
-        Returns: (x, y) center coordinates of the button in screen coordinates, or None if not found
-        """
-        if image is None:
-            image = self.capture_screen()
-        
-        h, w = image.shape[:2]
-        
-        # Convert to BGR for color detection (yellow button)
-        # Yellow button: RGB values around (255, 200-255, 0-50) = BGR(0-50, 200-255, 255)
-        # Use BGR ranges for yellow
-        yellow_lower = np.array([0, 180, 200], dtype=np.uint8)
-        yellow_upper = np.array([60, 255, 255], dtype=np.uint8)
-        
-        # Create mask for yellow pixels
-        yellow_mask = cv2.inRange(image, yellow_lower, yellow_upper)
-        
-        # Apply morphological operations to clean up the mask
-        kernel = np.ones((5, 5), np.uint8)
-        yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_CLOSE, kernel)
-        yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, kernel)
-        
-        # Find contours of yellow regions
-        contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Look for a reasonably sized rectangular yellow region (the button)
-        button_candidates = []
-        for contour in contours:
-            x, y, bw, bh = cv2.boundingRect(contour)
-            area = cv2.contourArea(contour)
-            
-            # Button should be:
-            # - Reasonably sized (not too small, not too large)
-            # - Rectangular-ish (width/height ratio between 1.5:1 and 5:1)
-            # - Located in lower-middle area of screen (bottom 40% of screen)
-            if area > 1000 and area < 50000:  # Reasonable button size
-                aspect_ratio = bw / bh if bh > 0 else 0
-                if 1.5 <= aspect_ratio <= 5.0:  # Button-like aspect ratio
-                    # Check if it's in the lower-middle area (bottom 40%)
-                    center_y = y + bh // 2
-                    if center_y > h * 0.6:  # In lower 40% of screen
-                        button_candidates.append((x + bw // 2, y + bh // 2, area, bw, bh))
-        
-        if button_candidates:
-            # Sort by area (largest first) and take the best candidate
-            button_candidates.sort(key=lambda x: x[2], reverse=True)
-            bx, by, _, _, _ = button_candidates[0]
-            
-            # Convert to screen coordinates
-            if self.game_region:
-                x1, y1, x2, y2 = self.game_region
-                screen_x = int(x1 + bx)
-                screen_y = int(y1 + by)
-                return (screen_x, screen_y)
-            else:
-                return (int(bx), int(by))
-        
-        return None
 
+    

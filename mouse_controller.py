@@ -56,7 +56,7 @@ class MouseController:
                 angle = (2 * 3.14159 * i) / steps
                 offset_x = int(radius * (1 if i % 2 == 0 else -1))
                 offset_y = int(radius * (1 if i % 2 == 0 else -1))
-                pyautogui.moveTo(x + offset_x, y + offset_y, duration=0.05)
+                pyautogui.moveTo(x + offset_x, y + offset_y, duration=0.02)
             # Return to center
             pyautogui.moveTo(x, y, duration=0.1)
         except:
@@ -74,13 +74,13 @@ class MouseController:
         if self.debug:
             # Move to position first so user can see where we're going
             current_pos = pyautogui.position()
-            print(f"\033[93m📍 Moving mouse to Tube {tube_index}: ({x}, {y})\033[0m", end="", flush=True)
+            # print(f"\033[93m📍 Moving mouse to Tube {tube_index}: ({x}, {y})\033[0m", end="", flush=True)
             pyautogui.moveTo(x, y, duration=0.3)  # Slower, more visible movement
             time.sleep(0.1)
             pyautogui.click(x, y)
         
         if self.debug:
-            print(f" \033[92m✓ Clicked!\033[0m")
+            # print(f" \033[92m✓ Clicked!\033[0m")
             # Flash green after click to confirm
             self._draw_click_indicator(x, y, "green")
         
@@ -98,7 +98,6 @@ class MouseController:
             print(f"\n\033[96m🔄 Pouring: Tube {from_tube} → Tube {to_tube}\033[0m")
         
         self.click_tube(from_tube, delay=0.1)
-        time.sleep(delay)
         self.click_tube(to_tube, delay=0.1)
         time.sleep(delay)
     
